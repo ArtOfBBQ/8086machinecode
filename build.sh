@@ -8,13 +8,21 @@ SOURCE="src/main.c"
 rm -r build
 mkdir -p build
 
-gcc $COMPILER_OPTIONS $SOURCE -o build/$APP_NAME
+if gcc $COMPILER_OPTIONS $SOURCE -o build/$APP_NAME; then
+echo "gcc success"
+else
+exit 0
+fi
 
 
 ###################################################
 #### Step 2: Produce sample 8086 machine code  ####
 ###################################################
-nasm src/samplemovs.asm -o build/machinecode
+if nasm src/samplemovs.asm -o build/machinecode; then
+echo "nasm success"
+else
+exit 0
+fi
 
 
 ###################################################

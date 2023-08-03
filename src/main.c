@@ -1,9 +1,6 @@
 #include <stdio.h>
 #include <stdint.h>
-
-// MOV is 100010
-//       32 + 2 = 34
-#define MOV 34
+#include <assert.h>
 
 static void read_file(
     char * filename,
@@ -42,7 +39,14 @@ static void strcat(
     recipient[i] = '\0';
 }
 
-/*
+static void strcpy(
+    char * recipient,
+    char * to_copy)
+{
+    recipient[0] = '\0';
+    strcat(recipient, to_copy);
+}
+
 static void strcat_uint(
     char * recipient,
     uint8_t to_cat)
@@ -52,55 +56,127 @@ static void strcat_uint(
         i++;
     }
     
-    recipient[i++] = '0' + to_cat;
+    uint32_t found_leader = 0;
+    
+    uint32_t mod = 10000000;
+    while (mod > 0) {
+        uint32_t new_digit = to_cat / mod;
+        assert(new_digit < 10);
+        to_cat -= (new_digit * mod);
+        
+        if (new_digit > 0 || found_leader) {
+            found_leader = 1;
+            recipient[i++] = '0' + new_digit;
+        }
+        mod /= 10;
+    }
+
+    if (!found_leader) {
+        recipient[i++] = '0';
+    }
     
     recipient[i] = '\0';
 }
+
+/*
+From 2 bytes of machine code, we will get an opcode, a 'W' flag, a 'D' flag,
+a 'mod' field, a 'reg' field and an 'r_m' field.
+More bytes may follow depending on what we get.
+
+####################################################
+# Byte 1                 ## Byte 2                 #
+#//////////////////      ##////////////////////////#
+#/0  1  2  3  4  5/ 6  7 ##/8  7/ 6  5  4/ 3  2  1/#
+#/#######/########/########/####/########/########/#
+ / O P C O D E    / W  D   / MOD/ R E G  /  R_M   / 
+ //////////////////        //////////////////////// 
 */
 
-#define AL 0
-#define CL 1
-#define DL 2
-#define BL 3
-#define AH 4
-#define CH 5
-#define DH 6
-#define BH 7
+/*
+The OPCODE is 6 bits and represents the 1st part of the assembly instruction
+*/
+#define MOV 34  // binary: 100010
 
-#define AX 0
-#define CX 1
-#define DX 2
-#define BX 3
-#define SP 4
-#define BP 5
-#define SI 6
-#define DI 7
 
-static char register_table[2][8][3];
+/*
+The reg field and r/m (register/memory) field refer to registers on the cpu
+
+We will use 2 tables to transform the 3 bits in 'reg' and 'r_m' into
+some characters of text (like "BP") that represent the register. The string
+buffer only needs 3 characters
+
+- This table is always used to decode the 'reg' field, regardless of the mod
+- This table is also used to decode the 'r/m' if and only if mod = 3
+is indexed by the value from the 'w' bit and then by 'r/m' to yield 3 chars
+                      w  rm 3 chars
+                      |  |  |
+*/
+static char reg_table[2][8][3];
+
+/*
+The table shows the r/m for mods 'below 3' (so 00, 01, and 10)
+If you are decoding the REG field, you DON'T use this table for any mod
+it's indexed by the values in mod and r/m, and yields 15 chars
+                            mod rm 15 chars
+                             |  |  |
+*/
+static char modsub3_rm_table[3][8][15];
+
 static void init_tables(void) {
     for (uint32_t w = 0; w < 2; w++) {
         for (uint32_t registry_code = 0; registry_code < 8; registry_code++) {
-            register_table[w][registry_code][0] = '\0';
+            reg_table[w][registry_code][0] = '\0';
         }
     }
     
-    strcat(register_table[0][AL], "AL");
-    strcat(register_table[0][CL], "CL");
-    strcat(register_table[0][DL], "DL");
-    strcat(register_table[0][BL], "BL");
-    strcat(register_table[0][AH], "AH");
-    strcat(register_table[0][CH], "CH");
-    strcat(register_table[0][DH], "DH");
-    strcat(register_table[0][BH], "BH");
+    // mod '11' or 3 with its own table
+    strcpy(reg_table[0][0], "AL");
+    strcpy(reg_table[0][1], "CL");
+    strcpy(reg_table[0][2], "DL");
+    strcpy(reg_table[0][3], "BL");
+    strcpy(reg_table[0][4], "AH");
+    strcpy(reg_table[0][5], "CH");
+    strcpy(reg_table[0][6], "DH");
+    strcpy(reg_table[0][7], "BH");
     
-    strcat(register_table[1][AX], "AX");
-    strcat(register_table[1][CX], "CX");
-    strcat(register_table[1][DX], "DX");
-    strcat(register_table[1][BX], "BX");
-    strcat(register_table[1][SP], "SP");
-    strcat(register_table[1][BP], "BP");
-    strcat(register_table[1][SI], "SI");
-    strcat(register_table[1][DI], "DI");
+    strcpy(reg_table[1][0], "AX");
+    strcpy(reg_table[1][1], "CX");
+    strcpy(reg_table[1][2], "DX");
+    strcpy(reg_table[1][3], "BX");
+    strcpy(reg_table[1][4], "SP");
+    strcpy(reg_table[1][5], "BP");
+    strcpy(reg_table[1][6], "SI");
+    strcpy(reg_table[1][7], "DI");
+
+    // mod '10' or 2
+    strcpy(modsub3_rm_table[2][0], "(BX)+(SI)+(D16)");
+    strcpy(modsub3_rm_table[2][1], "1?(BX)+(SI)+(D16)");
+    strcpy(modsub3_rm_table[2][2], "2?(BX)+(SI)+(D16)");
+    strcpy(modsub3_rm_table[2][3], "3?(BX)+(SI)+(D16)");
+    strcpy(modsub3_rm_table[2][4], "4?(BX)+(SI)+(D16)");
+    strcpy(modsub3_rm_table[2][5], "5?(BX)+(SI)+(D16)");
+    strcpy(modsub3_rm_table[2][6], "6?(BX)+(SI)+(D16)");
+    strcpy(modsub3_rm_table[2][7], "7?(BX)+(SI)+(D16)");
+    
+    // mod '01' or 1
+    strcpy(modsub3_rm_table[1][0], "BX + SI");
+    strcpy(modsub3_rm_table[1][1], "BX + DI");
+    strcpy(modsub3_rm_table[1][2], "BP + SI");
+    strcpy(modsub3_rm_table[1][3], "BP + DI");
+    strcpy(modsub3_rm_table[1][4], "SI"); // SI + D8
+    strcpy(modsub3_rm_table[1][5], "DI"); // DI + D8
+    strcpy(modsub3_rm_table[1][6], "BP"); // BP + D8
+    strcpy(modsub3_rm_table[1][7], "BX"); // BX + D8
+    
+    // mod '00' or 0
+    strcpy(modsub3_rm_table[0][0], "(BX)+(SI)");
+    strcpy(modsub3_rm_table[0][1], "1?(BX)+(SI)");
+    strcpy(modsub3_rm_table[0][2], "2?(BX)+(SI)");
+    strcpy(modsub3_rm_table[0][3], "3?(BX)+(SI)");
+    strcpy(modsub3_rm_table[0][4], "4?(BX)+(SI)");
+    strcpy(modsub3_rm_table[0][5], "5?(BX)+(SI)");
+    strcpy(modsub3_rm_table[0][6], "6?(BX)+(SI)");
+    strcpy(modsub3_rm_table[0][7], "7?(BX)+(SI)");
 }
 
 static void disassemble(
@@ -110,43 +186,81 @@ static void disassemble(
 {
     strcat(recipient, "bits 16\n");
     
-    for (uint32_t i = 0; (i+1) < input_size; i += 2) {
-        uint8_t opcode = input[i] >> 2;
+    uint32_t input_i = 0;
+    while (input_i < input_size) {
+        uint32_t bytes_consumed = 2; // we always read at least 2 bytes
+        uint8_t opcode = input[input_i] >> 2;
         
         // the 'd' field generally specifies the 'direction',
         // to or from register?
+        // 0 means the left hand registry is the destination
         // 1 means the REG field in the second byte is the destination
-        uint8_t d = (input[i] >> 1) & 1; 
+        uint8_t d = (input[input_i] >> 1) & 1; 
         
         // word or byte operation? 
         // 0 = instruction operates on byte data
         // 1 = instruction operates on word data (2 bytes)
-        uint8_t w = input[i] & 1;
+        uint8_t w = input[input_i] & 1;
         
         // register mode / memory mode with discplacement 
-        // TODO: use this
-        // uint8_t mod = (input[i + 1] >> 6) & 3;
+        uint8_t mod = (input[input_i + 1] >> 6) & 3;
         
         // register operand (extension of opcode)
-        uint8_t reg = (input[i + 1] >> 3) & 7;
+        uint8_t reg = (input[input_i + 1] >> 3) & 7;
         
         // register operand / registers to use in EA calculation
-        uint8_t r_m = input[i + 1] & 7;
+        uint8_t r_m = input[input_i + 1] & 7;
         
         switch (opcode) {
             case MOV: {
                 strcat(recipient, "mov ");
+                if (mod == 0) {
+                    // memory mode, no displacement follows
+                    
+                    // note there is a 'gotcha' exception here;
+                    // 'except when r/m = 110, then 16 bit discplacement
+                    // follows'
+                    if (r_m == 6) {
 
-                if (d) {
-                    strcat(recipient, register_table[w][reg]);
-                    strcat(recipient, ", ");
-                    strcat(recipient, register_table[w][r_m]);
+                        uint16_t extra_bytes =
+                            *(uint16_t *)(&input[input_i + 2]);
+                        
+                        strcat(recipient, reg_table[w][reg]);
+                        strcat(recipient, ", [");
+                        strcat_uint(recipient, extra_bytes);
+                        strcat(recipient, "]");
+                        
+                        bytes_consumed += 2;
+                    }
+                } else if (mod == 1) {
+                    // memory mode, 8-bit displacement follows
+                    bytes_consumed += 1;
+                    
+                    strcat(recipient, reg_table[w][reg]);
+                    strcat(recipient, ", [");
+                    strcat(recipient, modsub3_rm_table[mod][r_m]);
+                    strcat(recipient, " + ");
+                    strcat_uint(recipient, input[input_i + 2]);
+                    strcat(recipient, "]");
+                } else if (mod == 2) {
+                    // memory mode, 16-bit displacement follows
+                    bytes_consumed += 2;
+                    
+                    strcat(recipient, "mod2");
+                } else if (mod == 3) {
+                    // register mode (no displacement)
+                    if (d) {
+                        strcat(recipient, reg_table[w][reg]);
+                        strcat(recipient, ", ");
+                        strcat(recipient, reg_table[w][r_m]);
+                    } else {
+                        strcat(recipient, reg_table[w][r_m]);
+                        strcat(recipient, ", ");
+                        strcat(recipient, reg_table[w][reg]);
+                    }
                 } else {
-                    strcat(recipient, register_table[w][r_m]);
-                    strcat(recipient, ", ");
-                    strcat(recipient, register_table[w][reg]);
+                    assert(0);
                 }
-                
                 break;
             }
             default:
@@ -155,6 +269,7 @@ static void disassemble(
         }
         
         strcat(recipient, "\n");
+        input_i += bytes_consumed;
     }
 }
 
