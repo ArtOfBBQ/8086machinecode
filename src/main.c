@@ -122,18 +122,23 @@ More bytes may follow depending on what we get.
 The OPCODE is a 3 to 8 bits and represents the 1st part of the
 assembly instruction
 */
-#define MOV_REGMEMTOREG 34  // binary: 100010
-#define MOV_IMMTOREG    11  // binary:   1011
+#define MOV_REGMEMTOREG     34  // binary: 100010
+#define MOV_IMMTOREG        11  // binary: 1011
+#define MOV_MEMTOACC        80  // binary: 1010000 = 64 + 16 = 80
+#define MOV_ACCTOMEM        81  // binary: 1010001 = 80 + 1 = 81
 typedef struct OpCode {
     char text[4];
     uint8_t number;
     uint8_t has_d_field;
+    uint8_t hardcoded_d_field;
     uint8_t has_w_field;
     uint8_t has_mod;
     uint8_t has_reg;
+    char hardcoded_reg[3];
     uint8_t has_rm;
+    uint8_t extra_bytes_are_addresses;
 } OpCode;
-#define OPCODE_TABLE_SIZE 2
+#define OPCODE_TABLE_SIZE 4
 static OpCode opcode_table[OPCODE_TABLE_SIZE];
 static uint32_t opcode_table_size = 0;
 
@@ -166,10 +171,13 @@ static void init_tables(void) {
     for (uint32_t i = 0; i < OPCODE_TABLE_SIZE; i++) {
         opcode_table[i].text[0] = '\0';
         opcode_table[i].has_d_field = false;
+        opcode_table[i].hardcoded_d_field = 0;
         opcode_table[i].has_w_field = false;
         opcode_table[i].has_mod = false;
         opcode_table[i].has_reg = false;
+        opcode_table[i].hardcoded_reg[0] = '\0';
         opcode_table[i].has_rm = false;
+        opcode_table[i].extra_bytes_are_addresses = false;
     }
     
     strcpy(opcode_table[opcode_table_size].text, "MOV");
@@ -188,6 +196,30 @@ static void init_tables(void) {
     opcode_table[opcode_table_size].has_mod = true;
     opcode_table[opcode_table_size].has_reg = true;
     opcode_table[opcode_table_size].has_rm = true;
+    opcode_table_size += 1;
+    
+    strcpy(opcode_table[opcode_table_size].text, "MOV");
+    opcode_table[opcode_table_size].number = MOV_ACCTOMEM; // 1010001
+    opcode_table[opcode_table_size].has_d_field = false;
+    opcode_table[opcode_table_size].hardcoded_d_field = 1; // register is dest
+    opcode_table[opcode_table_size].has_w_field = true;
+    opcode_table[opcode_table_size].has_mod = false;
+    opcode_table[opcode_table_size].has_reg = false;
+    strcpy(opcode_table[opcode_table_size].hardcoded_reg, "AX");
+    opcode_table[opcode_table_size].has_rm = false;
+    opcode_table[opcode_table_size].extra_bytes_are_addresses = true;
+    opcode_table_size += 1;
+    
+    strcpy(opcode_table[opcode_table_size].text, "MOV");
+    opcode_table[opcode_table_size].number = MOV_MEMTOACC; // 1010000 or 80
+    opcode_table[opcode_table_size].has_d_field = false;
+    opcode_table[opcode_table_size].hardcoded_d_field = 0; // memory is dest
+    opcode_table[opcode_table_size].has_w_field = true;
+    opcode_table[opcode_table_size].has_mod = false;
+    opcode_table[opcode_table_size].has_reg = false;
+    strcpy(opcode_table[opcode_table_size].hardcoded_reg, "AX");
+    opcode_table[opcode_table_size].has_rm = false;
+    opcode_table[opcode_table_size].extra_bytes_are_addresses = true;
     opcode_table_size += 1;
     
     assert(opcode_table[0].number > 0);
@@ -310,7 +342,6 @@ static void disassemble(
                 "Error - bits consumed %u (not 0) at new line\n",
                 bits_consumed);
         }
-        // bits_consumed = 3;
         
         OpCode * opcode = NULL;
         uint8_t bits_to_try = 1;
@@ -356,7 +387,7 @@ static void disassemble(
         // to or from register?
         // 0 means the left hand registry is the destination
         // 1 means the REG field in the second byte is the destination
-        uint8_t d = UINT8_MAX;
+        uint8_t d = opcode->hardcoded_d_field;
         if (opcode->has_d_field) {
             d = consume_bits(1);
         }
@@ -408,7 +439,7 @@ static void disassemble(
                         extra_bytes = 2;
                         extra_byte_1 = consume_byte();
                         extra_byte_2 = consume_byte();
-
+                        
                         uint16_t extra_bytes_combined =
                             (extra_byte_2 << 8) + extra_byte_1;
                         
@@ -511,21 +542,82 @@ static void disassemble(
                     assert(0);
             }
         } else {
+            
+            char target_register[5];
+            if (opcode->hardcoded_reg[0] != '\0') {
+                strcpy(
+                    target_register,
+                    opcode->hardcoded_reg);
+            } else {
+                strcpy(
+                    target_register,
+                    reg_table[w][reg]);
+            }
+            
             extra_bytes = 1 + w;
             extra_byte_1 = consume_byte();
             if (extra_bytes == 1) {
-                strcat(recipient, reg_table[w][reg]);
-                strcat(recipient, ", ");
-                strcat_uint(recipient, extra_byte_1);
+                if (d) {
+                    // d=1 means the memory is the destination
+                    if (opcode->extra_bytes_are_addresses) {
+                        strcat(recipient, "[");
+                    }
+                    strcat_uint(recipient, extra_byte_1);
+                    if (opcode->extra_bytes_are_addresses) {
+                        strcat(recipient, "]");
+                    }
+                    strcat(recipient, ", ");
+                    
+                    strcat(recipient, target_register);
+                    strcat(recipient, " ; extra bytes 1, d=1");
+                } else {
+                    // d=0 means the registry is the destination
+                    strcat(recipient, target_register);
+                    strcat(recipient, ", ");
+                    if (opcode->extra_bytes_are_addresses) {
+                        strcat(recipient, "[");
+                    }
+                    
+                    strcat_uint(recipient, extra_byte_1);
+                    if (opcode->extra_bytes_are_addresses) {
+                        strcat(recipient, "]");
+                    }
+                    strcat(recipient, " ; extra bytes 1, d=0");
+                }
             } else {
                 assert(extra_bytes == 2);
                 extra_byte_2 = consume_byte();
                 // manual: 'the second byte is always most significant'
                 int16_t extra_bytes_combined =
                     (extra_byte_2 << 8) + extra_byte_1;
-                strcat(recipient, reg_table[w][reg]);
-                strcat(recipient, ", ");
-                strcat_int(recipient, extra_bytes_combined);
+                
+                if (d) {
+                    // d=1 means the memory is the destination
+                    if (opcode->extra_bytes_are_addresses) {
+                        strcat(recipient, "[");
+                    }
+                    strcat_int(recipient, extra_bytes_combined);
+                    if (opcode->extra_bytes_are_addresses) {
+                        strcat(recipient, "]");
+                    }
+                    strcat(recipient, ", ");
+                    
+                    strcat(recipient, target_register);
+                    strcat(recipient, " ; extra bytes 2, d=1");
+                } else {
+                    // d=0 means the registry is the destination
+                    strcat(recipient, target_register);
+                    strcat(recipient, ", ");
+                    
+                    if (opcode->extra_bytes_are_addresses) {
+                        strcat(recipient, "[");
+                    }
+                    strcat_int(recipient, extra_bytes_combined);
+                    if (opcode->extra_bytes_are_addresses) {
+                        strcat(recipient, "]");
+                    }
+                    strcat(recipient, " ; extra bytes 2, d=0");
+                }
             }
         }
         
