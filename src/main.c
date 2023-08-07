@@ -139,8 +139,15 @@ assembly instruction
 */
 #define MOV_REGMEMTOREG        34 // binary: 100010
 #define MOV_IMMTOREG           11 // binary: 1011
+#define MOV_IMMTOREGMEM        99 // binary: 1100011
+
+/*
+note: these names are from the intel manual, actually I would reverse them
+('memory to accumulator' actually moves what's in the accumulator to memory)
+*/
 #define MOV_MEMTOACC           80 // binary: 1010000
 #define MOV_ACCTOMEM           81 // binary: 1010001
+
 
 #define ADD_REGMEMTOREG         0 // binary: 000000
 #define ADD_IMMTOREGMEM        32 // binary: 100000
@@ -154,11 +161,13 @@ typedef struct OpCode {
     uint8_t has_s_field;
     uint8_t has_w_field;
     uint8_t has_mod;
-    uint8_t has_triple_mistery_bits;
+    uint8_t has_secondary_3bit_opcode;
+    uint8_t secondary_3bit_opcode;
     uint8_t has_reg;
     char hardcoded_reg[3]; // this opcode always behaves as if reg = "xx"
     uint8_t has_rm;
-    uint8_t extra_bytes_are_addresses;
+    uint8_t data_bytes_are_addresses;
+    uint8_t data_bytes_are_immediates;
     uint8_t has_data_byte_1;
     uint8_t has_data_byte_2_if_w;
     uint8_t has_data_byte_2_always;
@@ -203,12 +212,14 @@ static void init_tables(void) {
         opcode_table[i].has_mod = false;
         opcode_table[i].has_reg = false;
         opcode_table[i].hardcoded_reg[0] = '\0';
-        opcode_table[i].has_triple_mistery_bits = false;
+        opcode_table[i].has_secondary_3bit_opcode = false;
+        opcode_table[i].secondary_3bit_opcode = 0;
         opcode_table[i].has_rm = false;
         opcode_table[i].has_data_byte_1 = false;
         opcode_table[i].has_data_byte_2_if_w = false;
         opcode_table[i].has_data_byte_2_always = false;
-        opcode_table[i].extra_bytes_are_addresses = false;
+        opcode_table[i].data_bytes_are_addresses = false;
+        opcode_table[i].data_bytes_are_immediates = false;
     }
     
     strcpy(opcode_table[opcode_table_size].text, "MOV");
@@ -232,6 +243,53 @@ static void init_tables(void) {
     opcode_table[opcode_table_size].has_mod = true;
     opcode_table[opcode_table_size].has_reg = true;
     opcode_table[opcode_table_size].has_rm = true;
+    opcode_table_size += 1;
+   
+    /* 
+    note: these names are from the intel manual, actually I would reverse them
+    ('memory to accumulator' moves what's in the accumulator to memory)
+    
+    example instruction: mov [2555], ax
+    */
+    strcpy(opcode_table[opcode_table_size].text, "MOV");
+    opcode_table[opcode_table_size].number = MOV_ACCTOMEM; // 1010001
+    strcpy(opcode_table[opcode_table_size].hardcoded_reg, "AX");
+    opcode_table[opcode_table_size].size_in_bits = 7;
+    opcode_table[opcode_table_size].has_w_field = true;
+    opcode_table[opcode_table_size].hardcoded_d_field = 0;
+    opcode_table[opcode_table_size].has_data_byte_1 = true;
+    opcode_table[opcode_table_size].has_data_byte_2_always = true;
+    opcode_table[opcode_table_size].data_bytes_are_addresses = true;
+    opcode_table_size += 1;
+    
+    /* 
+    example instruction: mov ax, [2555] (yes, intel's opcode name is reversed)
+    */
+    strcpy(opcode_table[opcode_table_size].text, "MOV");
+    opcode_table[opcode_table_size].number = MOV_MEMTOACC; // 1010000
+    strcpy(opcode_table[opcode_table_size].hardcoded_reg, "AX");
+    opcode_table[opcode_table_size].size_in_bits = 7;
+    opcode_table[opcode_table_size].has_w_field = true;
+    opcode_table[opcode_table_size].hardcoded_d_field = 1;
+    opcode_table[opcode_table_size].has_data_byte_1 = true;
+    opcode_table[opcode_table_size].has_data_byte_2_always = true;
+    opcode_table[opcode_table_size].data_bytes_are_addresses = true;
+    opcode_table_size += 1;
+    
+    strcpy(opcode_table[opcode_table_size].text, "MOV");
+    opcode_table[opcode_table_size].number = MOV_IMMTOREGMEM; // 1100011
+    opcode_table[opcode_table_size].size_in_bits = 7;
+    opcode_table[opcode_table_size].has_w_field = true;
+    opcode_table[opcode_table_size].has_d_field = false;
+    // opcode_table[opcode_table_size].hardcoded_d_field = 0;
+    opcode_table[opcode_table_size].has_mod = true;
+    opcode_table[opcode_table_size].has_reg = false;
+    opcode_table[opcode_table_size].has_secondary_3bit_opcode = true;
+    opcode_table[opcode_table_size].secondary_3bit_opcode = 0; // 000
+    opcode_table[opcode_table_size].has_rm = true;
+    opcode_table[opcode_table_size].has_data_byte_1 = true;
+    opcode_table[opcode_table_size].has_data_byte_2_if_w = true;
+    opcode_table[opcode_table_size].data_bytes_are_immediates = true;
     opcode_table_size += 1;
     
     // mod '11' or 3 with its own table
@@ -437,9 +495,9 @@ static void disassemble(
             reg = consume_bits(3);
         }
         
-        uint8_t triple_mistery_bits = UINT8_MAX;
-        if (opcode->has_triple_mistery_bits) {
-            triple_mistery_bits = consume_bits(3);
+        uint8_t secondary_3bit_opcode = UINT8_MAX;
+        if (opcode->has_secondary_3bit_opcode) {
+            secondary_3bit_opcode = consume_bits(3);
         }
         
         uint8_t r_m = UINT8_MAX;
@@ -486,6 +544,7 @@ static void disassemble(
                 }
                 case 2: {
                     // memory mode, 16-bit displacement follows
+                    treat_secondary_reg_as_address = true;
                     num_displacement_bytes = 2;
                     
                     strcpy(secondary_reg, modsub3_rm_table[mod][r_m]);
@@ -511,29 +570,31 @@ static void disassemble(
         if (num_displacement_bytes > 0) {
             displacement_byte_1 = consume_byte();
         }
+        int16_t displacement_bytes_combined = displacement_byte_1;
         if (num_displacement_bytes > 1) {
             displacement_byte_2 = consume_byte();
+            displacement_bytes_combined =
+                (displacement_byte_2 << 8) + (displacement_byte_1 & UINT8_MAX);
         }
-        int8_t displacement_bytes_combined =
-            (displacement_byte_2 << 8) + displacement_byte_1;
         
         int8_t data_bytes = 0;
         int8_t data_byte_1 = 0;
         int8_t data_byte_2 = 0;
+        int16_t data_bytes_combined;
         if (opcode->has_data_byte_1) {
             data_bytes = 1;
             data_byte_1 = consume_byte();
-            
+            data_bytes_combined = data_byte_1;
             if (
                 opcode->has_data_byte_2_always ||
                 (opcode->has_data_byte_2_if_w && w))
             {
                 data_bytes = 2;
                 data_byte_2 = consume_byte();
+                data_bytes_combined =
+                    (data_byte_2 << 8) | (data_byte_1 & UINT8_MAX);
             }
         }
-        int16_t data_bytes_combined =
-            (data_byte_2 << 8) + data_byte_1;
         
         char first_part[20];
         first_part[0] = '\0';
@@ -542,9 +603,20 @@ static void disassemble(
         
         strcat(recipient, opcode->text);
         strcat(recipient, " ");
-       
-        assert(reg < UINT8_MAX); 
-        strcat(first_part, reg_table[w][reg]);
+        
+        assert(reg <= UINT8_MAX); 
+        if (opcode->hardcoded_reg[0] != '\0') {
+            strcat(first_part, opcode->hardcoded_reg);
+        } else if (opcode->data_bytes_are_immediates) {
+            if (w) {
+                strcat(first_part, "word ");
+            } else {
+                strcat(first_part, "byte ");
+            }
+            strcat_int(first_part, data_bytes_combined);
+        } else {
+            strcat(first_part, reg_table[w][reg]);
+        }
         assert(first_part[0] != '\0');
         
         if (secondary_reg[0] != '\0') {
@@ -552,15 +624,26 @@ static void disassemble(
                 strcat(second_part, "[");
             }
             strcat(second_part, secondary_reg);
-            if (num_displacement_bytes > 0) {
-                strcat(second_part, "+");
+            if (
+                num_displacement_bytes > 0 &&
+                displacement_bytes_combined != 0)
+            {
+                if (displacement_bytes_combined >= 0) {
+                    strcat(second_part, "+");
+                }
                 strcat_int(second_part, displacement_bytes_combined);
             }
             if (treat_secondary_reg_as_address) {
                 strcat(second_part, "]");
             }
         } else if (data_bytes > 0) {
+            if (opcode->data_bytes_are_addresses) {
+            strcat(second_part, "[");
+            }
             strcat_int(second_part, data_bytes_combined);
+            if (opcode->data_bytes_are_addresses) {
+            strcat(second_part, "]");
+            }
         } else if (num_displacement_bytes > 0) {
             strcat(second_part, "[");
             strcat_int(second_part, displacement_bytes_combined);
@@ -601,6 +684,16 @@ static void disassemble(
         strcat_binary_uint(recipient, r_m, 3);
         strcat(recipient, ", num_displacement_bytes: ");
         strcat_int(recipient, num_displacement_bytes);
+        strcat(recipient, ", displacement_byte_1: ");
+        strcat_int(recipient, displacement_byte_1);
+        strcat(recipient, ", displacement_byte_2: ");
+        strcat_int(recipient, displacement_byte_2);
+        strcat(recipient, ", data_bytes: ");
+        strcat_uint(recipient, data_bytes);
+        strcat(recipient, ", data_byte_1: ");
+        strcat_int(recipient, data_byte_1);
+        strcat(recipient, ", data_byte_2: ");
+        strcat_int(recipient, data_byte_2);
         #endif
         
         strcat(recipient, "\n");
@@ -634,7 +727,7 @@ int main() {
     bytes_consumed = 0;
     bits_consumed = 0;
     
-    char recipient[2048];
+    char recipient[8000];
     recipient[0] = '\0';
     input = machine_code;
     input_size = machine_code_size;
