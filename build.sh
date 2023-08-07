@@ -2,7 +2,7 @@
 #### Step 1: Produce our little console app ####
 ################################################
 APP_NAME="disassembler"
-COMPILER_OPTIONS="-g -o0 -Wall -Wfatal-errors -x c -std=c99"
+COMPILER_OPTIONS="-fsanitize=address -g -o0 -Wall -Wfatal-errors -x c -std=c99"
 SOURCE="src/main.c"
 
 rm -r build
@@ -28,5 +28,11 @@ fi
 ###################################################
 #### Step 3: Run
 ###################################################
-build/$APP_NAME
+if build/$APP_NAME > build/output.txt; then
+    echo "program exited succesfully"
+    diff -i build/output.txt src/samplemovs.asm
+else
+    echo "program exit code was 1 (failure)"
+    cat build/output.txt
+fi
 

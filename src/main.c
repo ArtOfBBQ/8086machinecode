@@ -9,13 +9,13 @@
 #define false 0
 #endif
 
-// static void print_binary(
-//     const uint8_t input)
-// {
-//     for (int32_t i = 7; i >= 0; i--) {
-//         printf("%u", (input >> i) & 1);
-//     }
-// }
+static void print_binary(
+    const uint8_t input)
+{
+    for (int32_t i = 7; i >= 0; i--) {
+        printf("%u", (input >> i) & 1);
+    }
+}
 
 static void read_file(
     char * filename,
@@ -93,6 +93,16 @@ static void strcat_uint(
     recipient[i] = '\0';
 }
 
+static void strcat_binary_uint(
+    char * recipient,
+    uint8_t to_cat,
+    uint8_t digits)
+{
+    for (int32_t i = (digits - 1); i >= 0; i--) {
+        strcat_uint(recipient, (to_cat >> i) & 1);
+    }
+}
+
 static void strcat_int(
     char * recipient,
     int16_t to_cat)
@@ -105,9 +115,14 @@ static void strcat_int(
 }
 
 /*
-From 2 bytes of machine code, we will get an opcode, a 'W' flag, a 'D' flag,
+From 1+ bytes of machine code, we will get an opcode, a 'W' flag, a 'D' flag,
 a 'mod' field, a 'reg' field and an 'r_m' field.
-More bytes may follow depending on what we get.
+
+Which fields you expect to see are always different depending on the opcode,
+but the order of fields always seems to be the same, and the fields are always
+the same number of bits
+
+Here is an example of 1 of the MOV opcodes' signatures:
 
 ####################################################
 # Byte 1                 ## Byte 2                 #
@@ -122,23 +137,33 @@ More bytes may follow depending on what we get.
 The OPCODE is a 3 to 8 bits and represents the 1st part of the
 assembly instruction
 */
-#define MOV_REGMEMTOREG     34  // binary: 100010
-#define MOV_IMMTOREG        11  // binary: 1011
-#define MOV_MEMTOACC        80  // binary: 1010000 = 64 + 16 = 80
-#define MOV_ACCTOMEM        81  // binary: 1010001 = 80 + 1 = 81
+#define MOV_REGMEMTOREG        34 // binary: 100010
+#define MOV_IMMTOREG           11 // binary: 1011
+#define MOV_MEMTOACC           80 // binary: 1010000
+#define MOV_ACCTOMEM           81 // binary: 1010001
+
+#define ADD_REGMEMTOREG         0 // binary: 000000
+#define ADD_IMMTOREGMEM        32 // binary: 100000
+#define ADD_IMMTOACC            2 // binary: 0000010
 typedef struct OpCode {
     char text[4];
     uint8_t number;
+    uint8_t size_in_bits;
     uint8_t has_d_field;
-    uint8_t hardcoded_d_field;
+    uint8_t hardcoded_d_field; // this opcode always behaves as if d = x
+    uint8_t has_s_field;
     uint8_t has_w_field;
     uint8_t has_mod;
+    uint8_t has_triple_mistery_bits;
     uint8_t has_reg;
-    char hardcoded_reg[3];
+    char hardcoded_reg[3]; // this opcode always behaves as if reg = "xx"
     uint8_t has_rm;
     uint8_t extra_bytes_are_addresses;
+    uint8_t has_data_byte_1;
+    uint8_t has_data_byte_2_if_w;
+    uint8_t has_data_byte_2_always;
 } OpCode;
-#define OPCODE_TABLE_SIZE 4
+#define OPCODE_TABLE_SIZE 20
 static OpCode opcode_table[OPCODE_TABLE_SIZE];
 static uint32_t opcode_table_size = 0;
 
@@ -170,60 +195,44 @@ static void init_tables(void) {
     
     for (uint32_t i = 0; i < OPCODE_TABLE_SIZE; i++) {
         opcode_table[i].text[0] = '\0';
+        opcode_table[i].size_in_bits = 0;
         opcode_table[i].has_d_field = false;
         opcode_table[i].hardcoded_d_field = 0;
+        opcode_table[i].has_s_field = false;
         opcode_table[i].has_w_field = false;
         opcode_table[i].has_mod = false;
         opcode_table[i].has_reg = false;
         opcode_table[i].hardcoded_reg[0] = '\0';
+        opcode_table[i].has_triple_mistery_bits = false;
         opcode_table[i].has_rm = false;
+        opcode_table[i].has_data_byte_1 = false;
+        opcode_table[i].has_data_byte_2_if_w = false;
+        opcode_table[i].has_data_byte_2_always = false;
         opcode_table[i].extra_bytes_are_addresses = false;
     }
     
     strcpy(opcode_table[opcode_table_size].text, "MOV");
-    opcode_table[opcode_table_size].number = MOV_IMMTOREG; // 1101
+    opcode_table[opcode_table_size].number = MOV_IMMTOREG; // 1011
+    opcode_table[opcode_table_size].size_in_bits = 4;
     opcode_table[opcode_table_size].has_d_field = false;
+    opcode_table[opcode_table_size].hardcoded_d_field = 1;
     opcode_table[opcode_table_size].has_w_field = true;
     opcode_table[opcode_table_size].has_mod = false;
     opcode_table[opcode_table_size].has_reg = true;
     opcode_table[opcode_table_size].has_rm = false;
+    opcode_table[opcode_table_size].has_data_byte_1 = true;
+    opcode_table[opcode_table_size].has_data_byte_2_if_w = true;
     opcode_table_size += 1;
-    
+
     strcpy(opcode_table[opcode_table_size].text, "MOV");
     opcode_table[opcode_table_size].number = MOV_REGMEMTOREG; // 100010
+    opcode_table[opcode_table_size].size_in_bits = 6;
     opcode_table[opcode_table_size].has_d_field = true;
     opcode_table[opcode_table_size].has_w_field = true;
     opcode_table[opcode_table_size].has_mod = true;
     opcode_table[opcode_table_size].has_reg = true;
     opcode_table[opcode_table_size].has_rm = true;
     opcode_table_size += 1;
-    
-    strcpy(opcode_table[opcode_table_size].text, "MOV");
-    opcode_table[opcode_table_size].number = MOV_ACCTOMEM; // 1010001
-    opcode_table[opcode_table_size].has_d_field = false;
-    opcode_table[opcode_table_size].hardcoded_d_field = 1; // register is dest
-    opcode_table[opcode_table_size].has_w_field = true;
-    opcode_table[opcode_table_size].has_mod = false;
-    opcode_table[opcode_table_size].has_reg = false;
-    strcpy(opcode_table[opcode_table_size].hardcoded_reg, "AX");
-    opcode_table[opcode_table_size].has_rm = false;
-    opcode_table[opcode_table_size].extra_bytes_are_addresses = true;
-    opcode_table_size += 1;
-    
-    strcpy(opcode_table[opcode_table_size].text, "MOV");
-    opcode_table[opcode_table_size].number = MOV_MEMTOACC; // 1010000 or 80
-    opcode_table[opcode_table_size].has_d_field = false;
-    opcode_table[opcode_table_size].hardcoded_d_field = 0; // memory is dest
-    opcode_table[opcode_table_size].has_w_field = true;
-    opcode_table[opcode_table_size].has_mod = false;
-    opcode_table[opcode_table_size].has_reg = false;
-    strcpy(opcode_table[opcode_table_size].hardcoded_reg, "AX");
-    opcode_table[opcode_table_size].has_rm = false;
-    opcode_table[opcode_table_size].extra_bytes_are_addresses = true;
-    opcode_table_size += 1;
-    
-    assert(opcode_table[0].number > 0);
-    assert(opcode_table[1].number > 0);
     
     // mod '11' or 3 with its own table
     strcpy(reg_table[0][0], "AL");
@@ -245,30 +254,30 @@ static void init_tables(void) {
     strcpy(reg_table[1][7], "DI");
     
     // mod '10' or 2
-    strcpy(modsub3_rm_table[2][0], "BX + SI");
-    strcpy(modsub3_rm_table[2][1], "BX + DI");
-    strcpy(modsub3_rm_table[2][2], "BP + SI");
-    strcpy(modsub3_rm_table[2][3], "BP + DI");
+    strcpy(modsub3_rm_table[2][0], "BX+SI");
+    strcpy(modsub3_rm_table[2][1], "BX+DI");
+    strcpy(modsub3_rm_table[2][2], "BP+SI");
+    strcpy(modsub3_rm_table[2][3], "BP+DI");
     strcpy(modsub3_rm_table[2][4], "SI");
     strcpy(modsub3_rm_table[2][5], "DI");
     strcpy(modsub3_rm_table[2][6], "BP");
     strcpy(modsub3_rm_table[2][7], "BX");
     
     // mod '01' or 1
-    strcpy(modsub3_rm_table[1][0], "BX + SI");
-    strcpy(modsub3_rm_table[1][1], "BX + DI");
-    strcpy(modsub3_rm_table[1][2], "BP + SI");
-    strcpy(modsub3_rm_table[1][3], "BP + DI");
+    strcpy(modsub3_rm_table[1][0], "BX+SI");
+    strcpy(modsub3_rm_table[1][1], "BX+DI");
+    strcpy(modsub3_rm_table[1][2], "BP+SI");
+    strcpy(modsub3_rm_table[1][3], "BP+DI");
     strcpy(modsub3_rm_table[1][4], "SI"); // SI + D8
     strcpy(modsub3_rm_table[1][5], "DI"); // DI + D8
     strcpy(modsub3_rm_table[1][6], "BP"); // BP + D8
     strcpy(modsub3_rm_table[1][7], "BX"); // BX + D8
     
     // mod '00' or 0
-    strcpy(modsub3_rm_table[0][0], "BX + SI");
-    strcpy(modsub3_rm_table[0][1], "BX + DI");
-    strcpy(modsub3_rm_table[0][2], "BP + SI");
-    strcpy(modsub3_rm_table[0][3], "BP + DI");
+    strcpy(modsub3_rm_table[0][0], "BX+SI");
+    strcpy(modsub3_rm_table[0][1], "BX+DI");
+    strcpy(modsub3_rm_table[0][2], "BP+SI");
+    strcpy(modsub3_rm_table[0][3], "BP+DI");
     strcpy(modsub3_rm_table[0][4], "SI");
     strcpy(modsub3_rm_table[0][5], "DI");
     strcpy(modsub3_rm_table[0][6], "DIRADDR");
@@ -328,7 +337,8 @@ static uint8_t consume_bits(const uint32_t count) {
 }
 
 static void disassemble(
-    char * recipient)
+    char * recipient,
+    uint32_t * good)
 {
     strcat(recipient, "bits 16\n");
     
@@ -341,14 +351,18 @@ static void disassemble(
             printf(
                 "Error - bits consumed %u (not 0) at new line\n",
                 bits_consumed);
+            *good = false;
+            return;
         }
         
         OpCode * opcode = NULL;
         uint8_t bits_to_try = 1;
         while (
-            bits_to_try < 9 &&
+            bits_to_try < 8 &&
             opcode == NULL)
         {
+            bits_to_try += 1;
+            
             uint32_t try_opcode = try_bits(bits_to_try);
             
             for (
@@ -358,6 +372,7 @@ static void disassemble(
             {
                 if (
                     opcode_table[try_i].number == try_opcode &&
+                    opcode_table[try_i].size_in_bits == bits_to_try &&
                     opcode_table[try_i].text[0] != '\0')
                 {
                     uint8_t throwaway = consume_bits(bits_to_try);
@@ -366,15 +381,18 @@ static void disassemble(
                     break;
                 }
             }
-            bits_to_try += 1;
         }
         
         if (opcode == NULL) {
             printf("%s\n", recipient);
+            uint32_t try_opcode = try_bits(bits_to_try);
             printf(
-                "failed to find opcode: %u\n",
-                input[bytes_consumed]);
-            assert(0);
+                "failed to find opcode: %u (",
+                try_opcode);
+            print_binary(try_opcode);
+            printf(")\n");
+            *good = false;
+            return;
         }
         
         assert(bits_consumed < 9);
@@ -388,8 +406,16 @@ static void disassemble(
         // 0 means the left hand registry is the destination
         // 1 means the REG field in the second byte is the destination
         uint8_t d = opcode->hardcoded_d_field;
-        if (opcode->has_d_field) {
+        if (
+            opcode->has_d_field)
+        {
             d = consume_bits(1);
+        }
+
+        // sign extension flag
+        uint8_t s = UINT8_MAX;
+        if (opcode->has_s_field) {
+            s = consume_bits(1);
         }
         
         // word or byte operation? 
@@ -402,227 +428,185 @@ static void disassemble(
         
         // register mode / memory mode with discplacement 
         uint8_t mod = UINT8_MAX;
-        uint8_t reg = UINT8_MAX;
-        uint8_t r_m = UINT8_MAX;
-        uint8_t extra_bytes = 0;
-        uint8_t extra_byte_1 = UINT8_MAX;
-        uint8_t extra_byte_2 = UINT8_MAX;
-        
         if (opcode->has_mod) {
             mod = consume_bits(2);
         }
-        
+
+        uint8_t reg = UINT8_MAX;
         if (opcode->has_reg) {
             reg = consume_bits(3);
         }
-
+        
+        uint8_t triple_mistery_bits = UINT8_MAX;
+        if (opcode->has_triple_mistery_bits) {
+            triple_mistery_bits = consume_bits(3);
+        }
+        
+        uint8_t r_m = UINT8_MAX;
         if (opcode->has_rm) {
             r_m = consume_bits(3);
         }
         
-        strcat(recipient, opcode->text);
-        strcat(recipient, " ");
+        uint8_t num_displacement_bytes = 0;
+        char secondary_reg[10];
+        secondary_reg[0] = '\0';
+        uint8_t treat_secondary_reg_as_address = 0;
         
         if (opcode->has_mod) {
             switch (mod) {
                 case 0: {
                     // memory mode, no displacement follows
-                    
-                    // TODO: this has 2 discplacement bytes, but im only using
-                    // 1, definitely wrong... probably getting the right result
-                    // because number is <= UINT8_MAX, let's check later
-                    
-                    // note there is a 'gotcha' exception here;
-                    // 'except when r/m = 110, then 16 bit discplacement
-                    // follows'
                     if (r_m == 6) {
-                        extra_bytes = 2;
-                        extra_byte_1 = consume_byte();
-                        extra_byte_2 = consume_byte();
+                        // 'except when r/m = 110, then 16 bit discplacement
+                        // follows'
+                        num_displacement_bytes = 2;
                         
-                        uint16_t extra_bytes_combined =
-                            (extra_byte_2 << 8) + extra_byte_1;
-                        
-                        if (d) {
-                            strcat(recipient, reg_table[w][reg]);
-                            strcat(recipient, ", [");
-                            strcat_uint(recipient, extra_bytes_combined);
-                            strcat(recipient, "]");
-                        } else {
-                            strcat(recipient, "[");
-                            strcat_uint(recipient, extra_bytes_combined);
-                            strcat(recipient, "], ");
-                            strcat(recipient, reg_table[w][reg]);
-                        }
+                        // strcpy(secondary_reg, reg_table[w][reg]);
                     } else {
-                        if (d) {
-                            strcat(recipient, reg_table[w][reg]);
-                            strcat(recipient, ", [");
-                            strcat(recipient, modsub3_rm_table[mod][r_m]);
-                            strcat(recipient, "]");
-                        } else {
-                            strcat(recipient, "[");
-                            strcat(recipient, modsub3_rm_table[mod][r_m]);
-                            strcat(recipient, "], ");
-                            strcat(recipient, reg_table[w][reg]);
-                        }
+                        // TODO: not verified.. sure this is called '
+                        // memory mode' but so are the others and they dont
+                        // represent addresses. I can't find a reference to
+                        // this being an address anywhere in the manual
+                        treat_secondary_reg_as_address = 1;
+                        strcpy(secondary_reg, modsub3_rm_table[mod][r_m]);
                     }
+
+                    assert(num_displacement_bytes < 3);
                     break;
                 }
                 case 1: {
                     // memory mode, 8-bit displacement follows
-                    extra_bytes = 1;
-                    assert(d != UINT8_MAX);
-                    assert(r_m != UINT8_MAX);
-                    extra_byte_1 = consume_byte();
+                    treat_secondary_reg_as_address = true;
+                    num_displacement_bytes = 1;
                     
-                    if (d) {
-                        strcat(recipient, reg_table[w][reg]);
-                        strcat(recipient, ", [");
-                        strcat(recipient, modsub3_rm_table[mod][r_m]);
-                        if (extra_byte_1 > 0) {
-                            strcat(recipient, " + ");
-                            strcat_uint(recipient, extra_byte_1);
-                        }
-                        strcat(recipient, "]");
-                    } else {
-                        strcat(recipient, "[");
-                        strcat(recipient, modsub3_rm_table[mod][r_m]);
-                        if (extra_byte_1 > 0) {
-                            strcat(recipient, " + ");
-                            strcat_uint(recipient, extra_byte_1);
-                        }
-                        strcat(recipient, "], ");
-                        strcat(recipient, reg_table[w][reg]);
-                    }
+                    strcpy(secondary_reg, modsub3_rm_table[mod][r_m]);
+                    assert(secondary_reg[0] != '\0');
+                    assert(num_displacement_bytes < 3);
                     break;
                 }
                 case 2: {
                     // memory mode, 16-bit displacement follows
-                    extra_bytes = 2;
-                    assert(d != UINT8_MAX);
-                    assert(r_m != UINT8_MAX);
-                    extra_byte_1 = consume_byte();
-                    extra_byte_2 = consume_byte();
-                    uint16_t extra_bytes_combined =
-                        (extra_byte_2 << 8) + extra_byte_1;
+                    num_displacement_bytes = 2;
                     
-                    if (d) {
-                        strcat(recipient, reg_table[w][reg]);
-                        strcat(recipient, ", [");
-                        strcat(recipient, modsub3_rm_table[mod][r_m]);
-                        strcat(recipient, " + ");
-                        strcat_uint(recipient, extra_bytes_combined);
-                        strcat(recipient, "]");
-                    } else {
-                        strcat(recipient, "[");
-                        strcat(recipient, modsub3_rm_table[mod][r_m]);
-                        strcat(recipient, " + ");
-                        strcat_uint(recipient, extra_bytes_combined);
-                        strcat(recipient, "], ");
-                        strcat(recipient, reg_table[w][reg]);
-                    }
+                    strcpy(secondary_reg, modsub3_rm_table[mod][r_m]);
+                    assert(num_displacement_bytes < 3);
                     break;
                 }
                 case 3: {
                     // register mode (no displacement)
-                    if (d) {
-                        strcat(recipient, reg_table[w][reg]);
-                        strcat(recipient, ", ");
-                        strcat(recipient, reg_table[w][r_m]);
-                    } else {
-                        strcat(recipient, reg_table[w][r_m]);
-                        strcat(recipient, ", ");
-                        strcat(recipient, reg_table[w][reg]);
-                    }
+                    assert(num_displacement_bytes == 0);
+                    
+                    strcpy(secondary_reg, reg_table[w][r_m]);
                     break;
                 }
                 default:
                     printf("Error - mod was %u, expected < 4\n", mod);
                     assert(0);
             }
-        } else {
+        }
+        assert(num_displacement_bytes < 3);
+        
+        int8_t displacement_byte_1 = 0;
+        int8_t displacement_byte_2 = 0;
+        if (num_displacement_bytes > 0) {
+            displacement_byte_1 = consume_byte();
+        }
+        if (num_displacement_bytes > 1) {
+            displacement_byte_2 = consume_byte();
+        }
+        int8_t displacement_bytes_combined =
+            (displacement_byte_2 << 8) + displacement_byte_1;
+        
+        int8_t data_bytes = 0;
+        int8_t data_byte_1 = 0;
+        int8_t data_byte_2 = 0;
+        if (opcode->has_data_byte_1) {
+            data_bytes = 1;
+            data_byte_1 = consume_byte();
             
-            char target_register[5];
-            if (opcode->hardcoded_reg[0] != '\0') {
-                strcpy(
-                    target_register,
-                    opcode->hardcoded_reg);
-            } else {
-                strcpy(
-                    target_register,
-                    reg_table[w][reg]);
-            }
-            
-            extra_bytes = 1 + w;
-            extra_byte_1 = consume_byte();
-            if (extra_bytes == 1) {
-                if (d) {
-                    // d=1 means the memory is the destination
-                    if (opcode->extra_bytes_are_addresses) {
-                        strcat(recipient, "[");
-                    }
-                    strcat_uint(recipient, extra_byte_1);
-                    if (opcode->extra_bytes_are_addresses) {
-                        strcat(recipient, "]");
-                    }
-                    strcat(recipient, ", ");
-                    
-                    strcat(recipient, target_register);
-                    strcat(recipient, " ; extra bytes 1, d=1");
-                } else {
-                    // d=0 means the registry is the destination
-                    strcat(recipient, target_register);
-                    strcat(recipient, ", ");
-                    if (opcode->extra_bytes_are_addresses) {
-                        strcat(recipient, "[");
-                    }
-                    
-                    strcat_uint(recipient, extra_byte_1);
-                    if (opcode->extra_bytes_are_addresses) {
-                        strcat(recipient, "]");
-                    }
-                    strcat(recipient, " ; extra bytes 1, d=0");
-                }
-            } else {
-                assert(extra_bytes == 2);
-                extra_byte_2 = consume_byte();
-                // manual: 'the second byte is always most significant'
-                int16_t extra_bytes_combined =
-                    (extra_byte_2 << 8) + extra_byte_1;
-                
-                if (d) {
-                    // d=1 means the memory is the destination
-                    if (opcode->extra_bytes_are_addresses) {
-                        strcat(recipient, "[");
-                    }
-                    strcat_int(recipient, extra_bytes_combined);
-                    if (opcode->extra_bytes_are_addresses) {
-                        strcat(recipient, "]");
-                    }
-                    strcat(recipient, ", ");
-                    
-                    strcat(recipient, target_register);
-                    strcat(recipient, " ; extra bytes 2, d=1");
-                } else {
-                    // d=0 means the registry is the destination
-                    strcat(recipient, target_register);
-                    strcat(recipient, ", ");
-                    
-                    if (opcode->extra_bytes_are_addresses) {
-                        strcat(recipient, "[");
-                    }
-                    strcat_int(recipient, extra_bytes_combined);
-                    if (opcode->extra_bytes_are_addresses) {
-                        strcat(recipient, "]");
-                    }
-                    strcat(recipient, " ; extra bytes 2, d=0");
-                }
+            if (
+                opcode->has_data_byte_2_always ||
+                (opcode->has_data_byte_2_if_w && w))
+            {
+                data_bytes = 2;
+                data_byte_2 = consume_byte();
             }
         }
+        int16_t data_bytes_combined =
+            (data_byte_2 << 8) + data_byte_1;
+        
+        char first_part[20];
+        first_part[0] = '\0';
+        char second_part[20];
+        second_part[0] = '\0';
+        
+        strcat(recipient, opcode->text);
+        strcat(recipient, " ");
+       
+        assert(reg < UINT8_MAX); 
+        strcat(first_part, reg_table[w][reg]);
+        assert(first_part[0] != '\0');
+        
+        if (secondary_reg[0] != '\0') {
+            if (treat_secondary_reg_as_address) {
+                strcat(second_part, "[");
+            }
+            strcat(second_part, secondary_reg);
+            if (num_displacement_bytes > 0) {
+                strcat(second_part, "+");
+                strcat_int(second_part, displacement_bytes_combined);
+            }
+            if (treat_secondary_reg_as_address) {
+                strcat(second_part, "]");
+            }
+        } else if (data_bytes > 0) {
+            strcat_int(second_part, data_bytes_combined);
+        } else if (num_displacement_bytes > 0) {
+            strcat(second_part, "[");
+            strcat_int(second_part, displacement_bytes_combined);
+            strcat(second_part, "]");
+        } else {
+            printf("error - no data or secondary register\n");
+            *good = false;
+            return;
+        }
+        
+        assert(first_part[0] != '\0');
+        assert(second_part[0] != '\0');
+        if (d) {
+            strcat(recipient, first_part);
+            strcat(recipient, ", ");
+            strcat(recipient, second_part);
+        } else {
+            strcat(recipient, second_part);
+            strcat(recipient, ", ");
+            strcat(recipient, first_part);
+        }
+        
+        #if 0
+        strcat(recipient, " ; opcode: ");
+        strcat_binary_uint(
+            recipient,
+            opcode->number,
+            opcode->size_in_bits);
+        strcat(recipient, ", w: ");
+        strcat_binary_uint(recipient, w, 1);
+        strcat(recipient, ", d: ");
+        strcat_binary_uint(recipient, d, 1);
+        strcat(recipient, ", mod: ");
+        strcat_binary_uint(recipient, mod, 2);
+        strcat(recipient, ", reg: ");
+        strcat_binary_uint(recipient, reg, 3);
+        strcat(recipient, ", rm: ");
+        strcat_binary_uint(recipient, r_m, 3);
+        strcat(recipient, ", num_displacement_bytes: ");
+        strcat_int(recipient, num_displacement_bytes);
+        #endif
         
         strcat(recipient, "\n");
     }
+
+    *good = true;
 }
 
 int main() {
@@ -644,22 +628,25 @@ int main() {
     
     if (machine_code_size == 0) {
         printf("failed to read input file\n");
-        return 0;
-    } else {
-        printf("Read input file (%u bytes)\n", machine_code_size);
+        return 1;
     }
     
     bytes_consumed = 0;
     bits_consumed = 0;
     
-    char recipient[1024];
+    char recipient[2048];
     recipient[0] = '\0';
     input = machine_code;
     input_size = machine_code_size;
+
+    uint32_t success = 0;
     disassemble(
         /* char * recipient: */
-            recipient);
+            recipient,
+        &success);
     
-    printf("output:\n%s\n", recipient);
+    if (!success) { return 1; }
+    printf("%s", recipient);
+    return 0;
 }
 
