@@ -1,3 +1,4 @@
+#include <stdlib.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <assert.h>
@@ -31,7 +32,7 @@ static void read_file(
             recipient_cap,
             fileptr);
         
-        *recipient_size = elements_read;
+        *recipient_size = (uint32_t)elements_read;
         
         fclose(fileptr);
     }
@@ -152,19 +153,28 @@ note: these names are from the intel manual, actually I would reverse them
 #define ADD_REGMEMTOREG         0 // binary: 000000
 #define ADD_IMMTOREGMEM        32 // binary: 100000
 #define ADD_IMMTOACC            2 // binary: 0000010
+
+#define SUB_REGMEMTOREG        10 // binary: 001010
+#define SUB_IMMTOREGMEM        32 // binary: 100000
+#define SUB_IMMTOACC           22 // binary: 0010110
+
+#define CMP_REGMEMTOREG        14 // binary: 001110
+
 typedef struct OpCode {
     char text[4];
     uint8_t number;
     uint8_t size_in_bits;
+    uint8_t has_secondary_3bit_opcode;
+    uint8_t secondary_3bit_opcode;
+    uint32_t secondary_3bit_offset;
     uint8_t has_d_field;
     uint8_t hardcoded_d_field; // this opcode always behaves as if d = x
     uint8_t has_s_field;
     uint8_t has_w_field;
     uint8_t has_mod;
-    uint8_t has_secondary_3bit_opcode;
-    uint8_t secondary_3bit_opcode;
     uint8_t has_reg;
-    char hardcoded_reg[3]; // this opcode always behaves as if reg = "xx"
+    char hardcoded_reg_w[3]; // always use this register if w = 1
+    char hardcoded_reg_b[3]; // always use this register if w = 0
     uint8_t has_rm;
     uint8_t data_bytes_are_addresses;
     uint8_t data_bytes_are_immediates;
@@ -172,7 +182,7 @@ typedef struct OpCode {
     uint8_t has_data_byte_2_if_w;
     uint8_t has_data_byte_2_always;
 } OpCode;
-#define OPCODE_TABLE_SIZE 20
+#define OPCODE_TABLE_SIZE 100
 static OpCode opcode_table[OPCODE_TABLE_SIZE];
 static uint32_t opcode_table_size = 0;
 
@@ -205,15 +215,17 @@ static void init_tables(void) {
     for (uint32_t i = 0; i < OPCODE_TABLE_SIZE; i++) {
         opcode_table[i].text[0] = '\0';
         opcode_table[i].size_in_bits = 0;
+        opcode_table[i].has_secondary_3bit_opcode = false;
+        opcode_table[i].secondary_3bit_opcode = 0;
+        opcode_table[i].secondary_3bit_offset = 0;
         opcode_table[i].has_d_field = false;
         opcode_table[i].hardcoded_d_field = 0;
         opcode_table[i].has_s_field = false;
         opcode_table[i].has_w_field = false;
         opcode_table[i].has_mod = false;
         opcode_table[i].has_reg = false;
-        opcode_table[i].hardcoded_reg[0] = '\0';
-        opcode_table[i].has_secondary_3bit_opcode = false;
-        opcode_table[i].secondary_3bit_opcode = 0;
+        opcode_table[i].hardcoded_reg_w[0] = '\0';
+        opcode_table[i].hardcoded_reg_b[0] = '\0';
         opcode_table[i].has_rm = false;
         opcode_table[i].has_data_byte_1 = false;
         opcode_table[i].has_data_byte_2_if_w = false;
@@ -253,7 +265,8 @@ static void init_tables(void) {
     */
     strcpy(opcode_table[opcode_table_size].text, "MOV");
     opcode_table[opcode_table_size].number = MOV_ACCTOMEM; // 1010001
-    strcpy(opcode_table[opcode_table_size].hardcoded_reg, "AX");
+    strcpy(opcode_table[opcode_table_size].hardcoded_reg_w, "AX");
+    strcpy(opcode_table[opcode_table_size].hardcoded_reg_b, "AL");
     opcode_table[opcode_table_size].size_in_bits = 7;
     opcode_table[opcode_table_size].has_w_field = true;
     opcode_table[opcode_table_size].hardcoded_d_field = 0;
@@ -267,7 +280,8 @@ static void init_tables(void) {
     */
     strcpy(opcode_table[opcode_table_size].text, "MOV");
     opcode_table[opcode_table_size].number = MOV_MEMTOACC; // 1010000
-    strcpy(opcode_table[opcode_table_size].hardcoded_reg, "AX");
+    strcpy(opcode_table[opcode_table_size].hardcoded_reg_w, "AX");
+    strcpy(opcode_table[opcode_table_size].hardcoded_reg_b, "AL");
     opcode_table[opcode_table_size].size_in_bits = 7;
     opcode_table[opcode_table_size].has_w_field = true;
     opcode_table[opcode_table_size].hardcoded_d_field = 1;
@@ -279,14 +293,109 @@ static void init_tables(void) {
     strcpy(opcode_table[opcode_table_size].text, "MOV");
     opcode_table[opcode_table_size].number = MOV_IMMTOREGMEM; // 1100011
     opcode_table[opcode_table_size].size_in_bits = 7;
+    opcode_table[opcode_table_size].has_secondary_3bit_opcode = true;
+    opcode_table[opcode_table_size].secondary_3bit_opcode = 0; // 000
+    opcode_table[opcode_table_size].secondary_3bit_offset = 10;
     opcode_table[opcode_table_size].has_w_field = true;
     opcode_table[opcode_table_size].has_d_field = false;
     // opcode_table[opcode_table_size].hardcoded_d_field = 0;
     opcode_table[opcode_table_size].has_mod = true;
     opcode_table[opcode_table_size].has_reg = false;
-    opcode_table[opcode_table_size].has_secondary_3bit_opcode = true;
-    opcode_table[opcode_table_size].secondary_3bit_opcode = 0; // 000
     opcode_table[opcode_table_size].has_rm = true;
+    opcode_table[opcode_table_size].has_data_byte_1 = true;
+    opcode_table[opcode_table_size].has_data_byte_2_if_w = true;
+    opcode_table[opcode_table_size].data_bytes_are_immediates = true;
+    opcode_table_size += 1;
+    
+    strcpy(opcode_table[opcode_table_size].text, "ADD");
+    opcode_table[opcode_table_size].number = ADD_REGMEMTOREG; // 000000
+    opcode_table[opcode_table_size].size_in_bits = 6;
+    opcode_table[opcode_table_size].has_d_field = true;
+    opcode_table[opcode_table_size].has_w_field = true;
+    opcode_table[opcode_table_size].has_mod = true;
+    opcode_table[opcode_table_size].has_reg = true;
+    opcode_table[opcode_table_size].has_rm = true;
+    opcode_table_size += 1;
+    
+    strcpy(opcode_table[opcode_table_size].text, "ADD");
+    opcode_table[opcode_table_size].number = ADD_IMMTOREGMEM; // 100000
+    opcode_table[opcode_table_size].size_in_bits = 6;
+    opcode_table[opcode_table_size].has_secondary_3bit_opcode = true;
+    opcode_table[opcode_table_size].secondary_3bit_opcode = 0; // 100
+    opcode_table[opcode_table_size].secondary_3bit_offset = 10;
+    opcode_table[opcode_table_size].has_s_field = true;
+    opcode_table[opcode_table_size].has_w_field = true;
+    // opcode_table[opcode_table_size].hardcoded_d_field = 0;
+    opcode_table[opcode_table_size].has_mod = true;
+    opcode_table[opcode_table_size].has_reg = false;
+    opcode_table[opcode_table_size].has_rm = true;
+    opcode_table[opcode_table_size].has_data_byte_1 = true;
+    opcode_table[opcode_table_size].has_data_byte_2_if_w = true;
+    opcode_table[opcode_table_size].data_bytes_are_immediates = true;
+    opcode_table_size += 1;
+
+    strcpy(opcode_table[opcode_table_size].text, "SUB");
+    opcode_table[opcode_table_size].number = SUB_REGMEMTOREG; // 001010
+    opcode_table[opcode_table_size].size_in_bits = 6;
+    opcode_table[opcode_table_size].has_d_field = true;
+    opcode_table[opcode_table_size].has_w_field = true;
+    opcode_table[opcode_table_size].has_mod = true;
+    opcode_table[opcode_table_size].has_reg = true;
+    opcode_table[opcode_table_size].has_rm = true;
+    opcode_table_size += 1;
+    
+    strcpy(opcode_table[opcode_table_size].text, "SUB");
+    opcode_table[opcode_table_size].number = SUB_IMMTOREGMEM; // 100000
+    opcode_table[opcode_table_size].size_in_bits = 6;
+    opcode_table[opcode_table_size].has_secondary_3bit_opcode = true;
+    opcode_table[opcode_table_size].secondary_3bit_opcode = 5; // 101
+    opcode_table[opcode_table_size].secondary_3bit_offset = 10;
+    opcode_table[opcode_table_size].has_s_field = true;
+    opcode_table[opcode_table_size].has_w_field = true;
+    opcode_table[opcode_table_size].hardcoded_d_field = 0;
+    opcode_table[opcode_table_size].has_mod = true;
+    opcode_table[opcode_table_size].has_reg = false;
+    opcode_table[opcode_table_size].has_rm = true;
+    opcode_table[opcode_table_size].has_data_byte_1 = true;
+    opcode_table[opcode_table_size].has_data_byte_2_if_w = true;
+    opcode_table[opcode_table_size].data_bytes_are_immediates = true;
+    opcode_table_size += 1;
+
+    strcpy(opcode_table[opcode_table_size].text, "CMP");
+    opcode_table[opcode_table_size].number = CMP_REGMEMTOREG; // 001110
+    opcode_table[opcode_table_size].size_in_bits = 6;
+    opcode_table[opcode_table_size].has_d_field = true;
+    opcode_table[opcode_table_size].has_w_field = true;
+    opcode_table[opcode_table_size].has_mod = true;
+    opcode_table[opcode_table_size].has_reg = true;
+    opcode_table[opcode_table_size].has_rm = true;
+    opcode_table_size += 1;
+
+    /*
+    example instruction: add ax, 1000
+    */
+    strcpy(opcode_table[opcode_table_size].text, "ADD");
+    opcode_table[opcode_table_size].number = ADD_IMMTOACC; // 0000010
+    opcode_table[opcode_table_size].size_in_bits = 7;
+    strcpy(opcode_table[opcode_table_size].hardcoded_reg_w, "AX");
+    strcpy(opcode_table[opcode_table_size].hardcoded_reg_b, "AL");
+    opcode_table[opcode_table_size].hardcoded_d_field = 1;
+    opcode_table[opcode_table_size].has_w_field = true;
+    opcode_table[opcode_table_size].has_data_byte_1 = true;
+    opcode_table[opcode_table_size].has_data_byte_2_if_w = true;
+    opcode_table[opcode_table_size].data_bytes_are_immediates = true;
+    opcode_table_size += 1;
+
+    /*
+    example instruction: sub ax, 1000
+    */
+    strcpy(opcode_table[opcode_table_size].text, "SUB");
+    opcode_table[opcode_table_size].number = SUB_IMMTOACC; // binary: 0010110
+    opcode_table[opcode_table_size].size_in_bits = 7;
+    strcpy(opcode_table[opcode_table_size].hardcoded_reg_w, "AX");
+    strcpy(opcode_table[opcode_table_size].hardcoded_reg_b, "AL");
+    opcode_table[opcode_table_size].hardcoded_d_field = 1;
+    opcode_table[opcode_table_size].has_w_field = true;
     opcode_table[opcode_table_size].has_data_byte_1 = true;
     opcode_table[opcode_table_size].has_data_byte_2_if_w = true;
     opcode_table[opcode_table_size].data_bytes_are_immediates = true;
@@ -343,27 +452,35 @@ static void init_tables(void) {
 }
 
 static uint8_t * input = NULL;
-static uint8_t input_size = 0;
+static uint32_t input_size = 0;
 static uint32_t bytes_consumed = 0;
 static uint32_t bits_consumed  = 0;
 
-static uint8_t try_bits(const uint32_t count) {
+static uint8_t try_bits_with_offset(
+    const uint32_t count,
+    const uint32_t using_offset)
+{
     /*
     Let's say bits_consumed is 2
     x x |
     0 1 2 3 4 5 6 7
     .. and we want 3 bits
     0 1[2 3 4]5 6 7
-
+    
     then first we << bits_consumed (2)
     2 3 4 5 6 7 8 0
     
     next, >> (8 - count) or (8 - 3) or >> 5
     0 0 0 0 0 2 3 4
-
+    
     next, we bitmask to be safe
     */
-    uint8_t return_value = (input[bytes_consumed] << bits_consumed);
+    uint32_t offset_bytes = using_offset / 8;
+    uint32_t offset_bits = using_offset % 8;
+    
+    uint8_t return_value =
+        (input[bytes_consumed + offset_bytes] <<
+            (bits_consumed + offset_bits));
     
     return_value >>= (8 - count);
     
@@ -371,6 +488,16 @@ static uint8_t try_bits(const uint32_t count) {
     return_value &= bitmask;
     
     return return_value;
+}
+
+static uint8_t try_bits(
+    const uint32_t count)
+{
+    return try_bits_with_offset(
+        /* const uint32_t count: */
+            count,
+        /* const uint32_t using_offset: */
+            0);
 }
 
 static uint8_t consume_byte() {
@@ -433,6 +560,25 @@ static void disassemble(
                     opcode_table[try_i].size_in_bits == bits_to_try &&
                     opcode_table[try_i].text[0] != '\0')
                 {
+                    /*
+                    hit! but this may still be a miss if there's a secondary
+                    opcode
+                    */
+                    if (opcode_table[try_i].has_secondary_3bit_opcode) {
+                        uint8_t secondary_opcode = try_bits_with_offset(
+                            /* const uint32_t count: */
+                                3,
+                            /* const uint32_t using_offset: */
+                                opcode_table[try_i].secondary_3bit_offset);
+                        
+                        if (
+                            secondary_opcode !=
+                                opcode_table[try_i].secondary_3bit_opcode)
+                        {
+                            continue;
+                        }
+                    }
+                    
                     uint8_t throwaway = consume_bits(bits_to_try);
                     opcode = &opcode_table[try_i];
                     assert(opcode->number == throwaway);
@@ -445,10 +591,10 @@ static void disassemble(
             printf("%s\n", recipient);
             uint32_t try_opcode = try_bits(bits_to_try);
             printf(
-                "failed to find opcode: %u (",
+                "failed to find opcode: %u - ",
                 try_opcode);
             print_binary(try_opcode);
-            printf(")\n");
+            printf("\n");
             *good = false;
             return;
         }
@@ -565,34 +711,54 @@ static void disassemble(
         }
         assert(num_displacement_bytes < 3);
         
-        int8_t displacement_byte_1 = 0;
-        int8_t displacement_byte_2 = 0;
+        uint8_t displacement_byte_1 = 0;
+        uint8_t displacement_byte_2 = 0;
+        int16_t displacement_bytes_combined = 0;
+        
         if (num_displacement_bytes > 0) {
             displacement_byte_1 = consume_byte();
-        }
-        int16_t displacement_bytes_combined = displacement_byte_1;
-        if (num_displacement_bytes > 1) {
-            displacement_byte_2 = consume_byte();
-            displacement_bytes_combined =
-                (displacement_byte_2 << 8) + (displacement_byte_1 & UINT8_MAX);
+            
+            if (num_displacement_bytes > 1) {
+                displacement_byte_2 = consume_byte();
+                
+                displacement_bytes_combined =
+                    (displacement_byte_2 << 8) |
+                    (displacement_byte_1 & UINT8_MAX);
+            } else {
+                displacement_bytes_combined =
+                    (int16_t)((int8_t)displacement_byte_1);
+            }
         }
         
         int8_t data_bytes = 0;
-        int8_t data_byte_1 = 0;
-        int8_t data_byte_2 = 0;
-        int16_t data_bytes_combined;
-        if (opcode->has_data_byte_1) {
+        uint8_t data_byte_1 = 0;
+        uint8_t data_byte_2 = 0;
+        int16_t data_bytes_combined = 0;
+        if (opcode->has_data_byte_1)
+        {
             data_bytes = 1;
-            data_byte_1 = consume_byte();
-            data_bytes_combined = data_byte_1;
+            data_byte_1 = (consume_byte() & UINT8_MAX);
+            
+            if (data_byte_1 < 0) {
+                data_bytes_combined = INT16_MAX;
+            }
+            
             if (
                 opcode->has_data_byte_2_always ||
-                (opcode->has_data_byte_2_if_w && w))
+                (
+                opcode->has_data_byte_2_if_w &&
+                    w &&
+                    (!opcode->has_s_field || !s)))
             {
                 data_bytes = 2;
                 data_byte_2 = consume_byte();
+                
                 data_bytes_combined =
-                    (data_byte_2 << 8) | (data_byte_1 & UINT8_MAX);
+                    (data_byte_2 << 8) |
+                    (data_byte_1 & UINT8_MAX);
+            } else {
+                assert(data_bytes == 1);
+                data_bytes_combined = (int16_t)(int8_t)data_byte_1;
             }
         }
         
@@ -605,10 +771,18 @@ static void disassemble(
         strcat(recipient, " ");
         
         assert(reg <= UINT8_MAX); 
-        if (opcode->hardcoded_reg[0] != '\0') {
-            strcat(first_part, opcode->hardcoded_reg);
-        } else if (opcode->data_bytes_are_immediates) {
+        if (opcode->hardcoded_reg_w[0] != '\0') {
+            assert(opcode->hardcoded_reg_b[0] != '\0');
             if (w) {
+                strcat(first_part, opcode->hardcoded_reg_w);
+            } else {
+                strcat(first_part, opcode->hardcoded_reg_b);
+            }
+        } else if (opcode->data_bytes_are_immediates) {
+            if (
+                w &&
+                opcode->has_s_field)
+            {
                 strcat(first_part, "word ");
             } else {
                 strcat(first_part, "byte ");
@@ -620,6 +794,7 @@ static void disassemble(
         assert(first_part[0] != '\0');
         
         if (secondary_reg[0] != '\0') {
+            
             if (treat_secondary_reg_as_address) {
                 strcat(second_part, "[");
             }
@@ -672,28 +847,55 @@ static void disassemble(
             recipient,
             opcode->number,
             opcode->size_in_bits);
-        strcat(recipient, ", w: ");
-        strcat_binary_uint(recipient, w, 1);
-        strcat(recipient, ", d: ");
-        strcat_binary_uint(recipient, d, 1);
-        strcat(recipient, ", mod: ");
-        strcat_binary_uint(recipient, mod, 2);
-        strcat(recipient, ", reg: ");
-        strcat_binary_uint(recipient, reg, 3);
-        strcat(recipient, ", rm: ");
-        strcat_binary_uint(recipient, r_m, 3);
-        strcat(recipient, ", num_displacement_bytes: ");
-        strcat_int(recipient, num_displacement_bytes);
-        strcat(recipient, ", displacement_byte_1: ");
-        strcat_int(recipient, displacement_byte_1);
-        strcat(recipient, ", displacement_byte_2: ");
-        strcat_int(recipient, displacement_byte_2);
-        strcat(recipient, ", data_bytes: ");
-        strcat_uint(recipient, data_bytes);
-        strcat(recipient, ", data_byte_1: ");
-        strcat_int(recipient, data_byte_1);
-        strcat(recipient, ", data_byte_2: ");
-        strcat_int(recipient, data_byte_2);
+        if (opcode->has_s_field) {
+            strcat(recipient, ", s: ");
+            strcat_binary_uint(recipient, s, 1);
+        }
+        if (opcode->has_w_field) {
+            strcat(recipient, ", w: ");
+            strcat_binary_uint(recipient, w, 1);
+        }
+        if (opcode->has_d_field) {
+            strcat(recipient, ", d: ");
+            strcat_binary_uint(recipient, d, 1);
+        }
+        if (opcode->has_mod) {
+            strcat(recipient, ", mod: ");
+            strcat_binary_uint(recipient, mod, 2);
+        }
+        if (opcode->has_secondary_3bit_opcode) {
+            strcat(recipient, ", 3bit_opcode_extension: ");
+            strcat_binary_uint(recipient, secondary_3bit_opcode, 3);
+        }
+        if (opcode->has_reg) {
+            strcat(recipient, ", reg: ");
+            strcat_binary_uint(recipient, reg, 3);
+        }
+        if (opcode->has_rm) {
+            strcat(recipient, ", rm: ");
+            strcat_binary_uint(recipient, r_m, 3);
+        }
+        if (num_displacement_bytes > 0) {
+            strcat(recipient, ", num_displacement_bytes: ");
+            strcat_int(recipient, num_displacement_bytes);
+            strcat(recipient, ", displacement_byte_1: ");
+            strcat_binary_uint(recipient, displacement_byte_1, 8);
+            strcat(recipient, ", displacement_byte_2: ");
+            strcat_binary_uint(recipient, displacement_byte_2, 8);
+            strcat(recipient, ", displacement_bytes_combined: ");
+            strcat_binary_uint(recipient, displacement_bytes_combined >> 8, 8);
+            strcat(recipient, " ");
+            strcat_binary_uint(recipient, displacement_bytes_combined & UINT8_MAX, 8);
+            strcat(recipient, ", data_bytes: ");
+        }
+        if (data_bytes > 0) {
+            strcat(recipient, ", data_byte_1: ");
+            strcat_int(recipient, data_byte_1);
+            if (data_bytes > 1) {
+                strcat(recipient, ", data_byte_2: ");
+                strcat_int(recipient, data_byte_2);
+            }
+        }
         #endif
         
         strcat(recipient, "\n");
@@ -706,7 +908,8 @@ int main() {
     
     init_tables();
     
-    uint8_t machine_code[128];
+    uint8_t * machine_code = (uint8_t *)malloc(10000);
+    machine_code[0] = '\0';
     uint32_t machine_code_size = 0;
     
     read_file(
@@ -727,18 +930,23 @@ int main() {
     bytes_consumed = 0;
     bits_consumed = 0;
     
-    char recipient[8000];
+    char * recipient = (char *)malloc(200000);
     recipient[0] = '\0';
     input = machine_code;
     input_size = machine_code_size;
-
+    
     uint32_t success = 0;
     disassemble(
         /* char * recipient: */
             recipient,
-        &success);
+        /* uint32_t * success: */
+            &success);
     
-    if (!success) { return 1; }
+    if (!success) {
+        printf("unknown error\n");
+        return 1;
+    }
+    strcat(recipient, "\n");
     printf("%s", recipient);
     return 0;
 }

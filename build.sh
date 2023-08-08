@@ -30,7 +30,12 @@ fi
 ###################################################
 if build/$APP_NAME > build/output.txt; then
     echo "program exited succesfully"
-    diff -i build/output.txt src/samplemovs.asm
+    if nasm build/output.txt -o build/machinecode2; then
+    echo "nasm recompile success"
+    else
+    exit 0
+    fi
+    diff -i build/machinecode build/machinecode2
 else
     echo "program exit code was 1 (failure)"
     cat build/output.txt

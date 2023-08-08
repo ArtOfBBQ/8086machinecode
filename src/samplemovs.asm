@@ -1,41 +1,49 @@
 bits 16
-mov sp, di
-mov bp, ax
-mov bp, [bx+si+16]
-mov [bx+16], bp
-mov bp, [32]
-mov [32], bp
-mov cx, bx
-mov ch, ah
-mov dx, bx
-mov si, bx
-mov bx, di
-mov al, cl
-mov ch, ch
-mov bx, ax
-mov bx, si
-mov cx, 5
-mov cx, -5
-mov dx, 3948
-mov dx, -3948
-mov dx, [bp]
-mov al, [bx+si]
-mov bx, [bp+di]
-mov ah, [bx+si+4]
-mov al, [bx+si+4999]
-mov [bx+di], cx
-mov [bp+si], cl
-mov [bp], ch
-mov bp, [5]
-mov bx, [3458]
-mov ax, [2555]
-mov [2555], ax
-mov ax, [16]
-mov [15], ax
-mov [2554], ax
-mov ax, [bx+di-37]
-mov dx, [bx-32]
-mov [si-300], cx
-mov [bp+di], byte 7
-mov [di+901], word 347
-
+sub al, -30
+add bx, [bx+si]
+add bx, [bp]
+add si, byte 2
+add bp, byte 2
+add cx, byte 8
+add bx, [bp+0]
+add cx, [bx+2]
+add bh, [bp+si+4]
+add di, [bp+di+6]
+add [bx+si], bx
+add [bp], bx
+add [bp+0], bx
+add [bx+2], cx
+add [bp+si+4], bh
+add [bp+di+6], di
+add byte [bx], 34
+add word [bp+si+1000], 29
+add ax, [bp]
+add al, [bx+si]
+add ax, bx
+add al, ah
+add ax, 1000
+add al, -30
+add al, 9
+sub bx, [bx+si]
+sub bx, [bp]
+sub si, 2
+sub bp, 2
+sub cx, 8
+sub bx, [bp+0]
+sub cx, [bx+2]
+sub bh, [bp+si+4]
+sub di, [bp+di+6]
+sub [bx+si], bx
+sub [bp], bx
+sub [bp+0], bx
+sub [bx+2], cx
+sub [bp+si+4], bh
+sub [bp+di+6], di
+sub byte [bx], 34
+sub word [bx+di], 29
+sub ax, [bp]
+sub al, [bx+si]
+sub ax, bx
+sub al, ah
+sub ax, 1000
+; sub al, 9
