@@ -159,9 +159,34 @@ note: these names are from the intel manual, actually I would reverse them
 #define SUB_IMMTOACC           22 // binary: 0010110
 
 #define CMP_REGMEMTOREG        14 // binary: 001110
+#define CMP_IMMTOREGMEM        32 // binary: 100000
+#define CMP_IMMTOACC           30 // binary: 0011110
+
+// #define RET_WITHINSEGMENT  195 // 11000011
+
+#define JO                    112 // 01110000 (jump on overflow)
+#define JNO                   113 // 01110001 (jump on not overflow)
+#define JB                    114 // 01110010 (jump below)
+#define JNB                   115 // 01110011 (jump not below)
+#define JE                    116 // 01110100 (jump equal)
+#define JNE_JNZ               117 // 01110101 (jump not equal, jump not zero)
+#define JBE_JNA               118 // 01110110 (below equal, not above)
+#define JA                    119 // 01110111 (jump above)
+#define JS                    120 // 01111000 (jump on sign)
+#define JNS                   121 // 01111001 (?)
+#define JP                    122 // 01111010 (jump on parity)
+#define JNP                   123 // 01111011 (jump on not parity)
+#define JL                    124 // 01111100 (jump less)
+#define JNL                   125 // 01111101 (jump not less)
+#define JLE                   126 // 01111110 (jump less or equal)
+#define JG                    127 // 01111111 (jump greater)
+#define LOOPNZ_LOOPNE         224 // 11100000 (loop while not 0 / not equal)
+#define LOOPZ_LOOPE           225 // 11100001 (loop while 0 / while equal)
+#define LOOP                  226 // 11100010 (loop cx times)
+#define JCXZ                  227 // 11100011 (jump when cx is 0)
 
 typedef struct OpCode {
-    char text[4];
+    char text[10];
     uint8_t number;
     uint8_t size_in_bits;
     uint8_t has_secondary_3bit_opcode;
@@ -178,12 +203,14 @@ typedef struct OpCode {
     uint8_t has_rm;
     uint8_t data_bytes_are_addresses;
     uint8_t data_bytes_are_immediates;
+    uint8_t data_bytes_are_jump_offsets;
     uint8_t has_data_byte_1;
     uint8_t has_data_byte_2_if_w;
     uint8_t has_data_byte_2_always;
 } OpCode;
-#define OPCODE_TABLE_SIZE 100
-static OpCode opcode_table[OPCODE_TABLE_SIZE];
+
+#define OPCODE_TABLE_SIZE 200
+static OpCode * opcode_table = NULL;
 static uint32_t opcode_table_size = 0;
 
 /*
@@ -212,6 +239,10 @@ static char modsub3_rm_table[3][8][15];
 
 static void init_tables(void) {
     
+    opcode_table = (OpCode *)malloc(OPCODE_TABLE_SIZE * sizeof(OpCode));
+    opcode_table_size = 0;
+    
+    assert(OPCODE_TABLE_SIZE > 100);
     for (uint32_t i = 0; i < OPCODE_TABLE_SIZE; i++) {
         opcode_table[i].text[0] = '\0';
         opcode_table[i].size_in_bits = 0;
@@ -232,6 +263,7 @@ static void init_tables(void) {
         opcode_table[i].has_data_byte_2_always = false;
         opcode_table[i].data_bytes_are_addresses = false;
         opcode_table[i].data_bytes_are_immediates = false;
+        opcode_table[i].data_bytes_are_jump_offsets = false;
     }
     
     strcpy(opcode_table[opcode_table_size].text, "MOV");
@@ -261,7 +293,7 @@ static void init_tables(void) {
     note: these names are from the intel manual, actually I would reverse them
     ('memory to accumulator' moves what's in the accumulator to memory)
     
-    example instruction: mov [2555], ax
+    mov [2555], ax
     */
     strcpy(opcode_table[opcode_table_size].text, "MOV");
     opcode_table[opcode_table_size].number = MOV_ACCTOMEM; // 1010001
@@ -276,7 +308,7 @@ static void init_tables(void) {
     opcode_table_size += 1;
     
     /* 
-    example instruction: mov ax, [2555] (yes, intel's opcode name is reversed)
+    mov ax, [2555] (yes, intel's opcode name is reversed)
     */
     strcpy(opcode_table[opcode_table_size].text, "MOV");
     opcode_table[opcode_table_size].number = MOV_MEMTOACC; // 1010000
@@ -372,7 +404,42 @@ static void init_tables(void) {
     opcode_table_size += 1;
 
     /*
-    example instruction: add ax, 1000
+    cmp si, 2
+    */
+    strcpy(opcode_table[opcode_table_size].text, "CMP");
+    opcode_table[opcode_table_size].number = SUB_IMMTOREGMEM; // 100000
+    opcode_table[opcode_table_size].size_in_bits = 6;
+    opcode_table[opcode_table_size].has_secondary_3bit_opcode = true;
+    opcode_table[opcode_table_size].secondary_3bit_opcode = 7; // 111
+    opcode_table[opcode_table_size].secondary_3bit_offset = 10;
+    opcode_table[opcode_table_size].has_s_field = true;
+    opcode_table[opcode_table_size].has_w_field = true;
+    opcode_table[opcode_table_size].hardcoded_d_field = 0;
+    opcode_table[opcode_table_size].has_mod = true;
+    opcode_table[opcode_table_size].has_reg = false;
+    opcode_table[opcode_table_size].has_rm = true;
+    opcode_table[opcode_table_size].has_data_byte_1 = true;
+    opcode_table[opcode_table_size].has_data_byte_2_if_w = true;
+    opcode_table[opcode_table_size].data_bytes_are_immediates = true;
+    opcode_table_size += 1;
+
+    /*
+    cmp ax, 2
+    */
+    strcpy(opcode_table[opcode_table_size].text, "CMP");
+    opcode_table[opcode_table_size].number = CMP_IMMTOACC; // binary: 0011110
+    opcode_table[opcode_table_size].size_in_bits = 7;
+    strcpy(opcode_table[opcode_table_size].hardcoded_reg_w, "AX");
+    strcpy(opcode_table[opcode_table_size].hardcoded_reg_b, "AL");
+    opcode_table[opcode_table_size].hardcoded_d_field = 1;
+    opcode_table[opcode_table_size].has_w_field = true;
+    opcode_table[opcode_table_size].has_data_byte_1 = true;
+    opcode_table[opcode_table_size].has_data_byte_2_if_w = true;
+    opcode_table[opcode_table_size].data_bytes_are_immediates = true;
+    opcode_table_size += 1;
+    
+    /*
+    add ax, 1000
     */
     strcpy(opcode_table[opcode_table_size].text, "ADD");
     opcode_table[opcode_table_size].number = ADD_IMMTOACC; // 0000010
@@ -387,7 +454,7 @@ static void init_tables(void) {
     opcode_table_size += 1;
 
     /*
-    example instruction: sub ax, 1000
+    sub ax, 1000
     */
     strcpy(opcode_table[opcode_table_size].text, "SUB");
     opcode_table[opcode_table_size].number = SUB_IMMTOACC; // binary: 0010110
@@ -399,6 +466,225 @@ static void init_tables(void) {
     opcode_table[opcode_table_size].has_data_byte_1 = true;
     opcode_table[opcode_table_size].has_data_byte_2_if_w = true;
     opcode_table[opcode_table_size].data_bytes_are_immediates = true;
+    opcode_table_size += 1;
+
+    /*
+    jump not zero
+    jnz test_label1
+    */
+    strcpy(opcode_table[opcode_table_size].text, "JNZ");
+    opcode_table[opcode_table_size].number = JNE_JNZ; // binary: 01110101
+    opcode_table[opcode_table_size].size_in_bits = 8;
+    opcode_table[opcode_table_size].has_data_byte_1 = true;
+    opcode_table[opcode_table_size].data_bytes_are_jump_offsets = true;
+    opcode_table_size += 1;
+    
+    /*
+    jump equal
+    je label2
+    */
+    strcpy(opcode_table[opcode_table_size].text, "JE");
+    opcode_table[opcode_table_size].number = JE; // binary: 01110100
+    opcode_table[opcode_table_size].size_in_bits = 8;
+    opcode_table[opcode_table_size].has_data_byte_1 = true;
+    opcode_table[opcode_table_size].data_bytes_are_jump_offsets = true;
+    opcode_table_size += 1;
+
+    /*
+    jump on overflow
+    jo label2
+    */
+    strcpy(opcode_table[opcode_table_size].text, "JO");
+    opcode_table[opcode_table_size].number = JO;
+    opcode_table[opcode_table_size].size_in_bits = 8;
+    opcode_table[opcode_table_size].has_data_byte_1 = true;
+    opcode_table[opcode_table_size].data_bytes_are_jump_offsets = true;
+    opcode_table_size += 1;
+
+    /*
+    jump on overflow
+    jno label2
+    */
+    strcpy(opcode_table[opcode_table_size].text, "JNO");
+    opcode_table[opcode_table_size].number = JNO;
+    opcode_table[opcode_table_size].size_in_bits = 8;
+    opcode_table[opcode_table_size].has_data_byte_1 = true;
+    opcode_table[opcode_table_size].data_bytes_are_jump_offsets = true;
+    opcode_table_size += 1;
+    
+    /*
+    jump below (TODO: understand how is this different from jump less)
+    jb label2
+    */
+    strcpy(opcode_table[opcode_table_size].text, "JB");
+    opcode_table[opcode_table_size].number = JB; // binary: 01110010
+    opcode_table[opcode_table_size].size_in_bits = 8;
+    opcode_table[opcode_table_size].has_data_byte_1 = true;
+    opcode_table[opcode_table_size].data_bytes_are_jump_offsets = true;
+    opcode_table_size += 1;
+
+    /*
+    jump not below
+    jnb label2
+    */
+    strcpy(opcode_table[opcode_table_size].text, "JNB");
+    opcode_table[opcode_table_size].number = JNB;
+    opcode_table[opcode_table_size].size_in_bits = 8;
+    opcode_table[opcode_table_size].has_data_byte_1 = true;
+    opcode_table[opcode_table_size].data_bytes_are_jump_offsets = true;
+    opcode_table_size += 1;
+
+    /*
+    jump if below or equal
+    jbe label2
+    */ 
+    strcpy(opcode_table[opcode_table_size].text, "JBE");
+    opcode_table[opcode_table_size].number = JBE_JNA; // binary: 01110110
+    opcode_table[opcode_table_size].size_in_bits = 8;
+    opcode_table[opcode_table_size].has_data_byte_1 = true;
+    opcode_table[opcode_table_size].data_bytes_are_jump_offsets = true;
+    opcode_table_size += 1;
+
+    /*
+    jump abovej
+    ja label2
+    */
+    strcpy(opcode_table[opcode_table_size].text, "JA");
+    opcode_table[opcode_table_size].number = JA;
+    opcode_table[opcode_table_size].size_in_bits = 8;
+    opcode_table[opcode_table_size].has_data_byte_1 = true;
+    opcode_table[opcode_table_size].data_bytes_are_jump_offsets = true;
+    opcode_table_size += 1;
+
+    /*
+    jump on sign
+    js label2
+    */
+    strcpy(opcode_table[opcode_table_size].text, "JS");
+    opcode_table[opcode_table_size].number = JS;
+    opcode_table[opcode_table_size].size_in_bits = 8;
+    opcode_table[opcode_table_size].has_data_byte_1 = true;
+    opcode_table[opcode_table_size].data_bytes_are_jump_offsets = true;
+    opcode_table_size += 1;
+
+    /*
+    JNS (jump on not sign)
+    */
+    strcpy(opcode_table[opcode_table_size].text, "JNS");
+    assert(opcode_table[opcode_table_size].text[0] != '\0');
+    assert(!opcode_table[opcode_table_size].has_secondary_3bit_opcode);
+    opcode_table[opcode_table_size].number = JNS;
+    opcode_table[opcode_table_size].size_in_bits = 8;
+    opcode_table[opcode_table_size].has_data_byte_1 = true;
+    opcode_table[opcode_table_size].data_bytes_are_jump_offsets = true;
+    opcode_table_size += 1;
+    
+    /*
+    jump parity
+    jp label2
+    */
+    strcpy(opcode_table[opcode_table_size].text, "JP");
+    opcode_table[opcode_table_size].number = JP;
+    opcode_table[opcode_table_size].size_in_bits = 8;
+    opcode_table[opcode_table_size].has_data_byte_1 = true;
+    opcode_table[opcode_table_size].data_bytes_are_jump_offsets = true;
+    opcode_table_size += 1;
+
+    /*
+    jump not parity
+    jnp label2
+    */
+    strcpy(opcode_table[opcode_table_size].text, "JNP");
+    opcode_table[opcode_table_size].number = JNP;
+    opcode_table[opcode_table_size].size_in_bits = 8;
+    opcode_table[opcode_table_size].has_data_byte_1 = true;
+    opcode_table[opcode_table_size].data_bytes_are_jump_offsets = true;
+    opcode_table_size += 1;
+    
+    /*
+    jump less
+    jl label2
+    */
+    strcpy(opcode_table[opcode_table_size].text, "JL");
+    opcode_table[opcode_table_size].number = JL; // binary: 01111100
+    opcode_table[opcode_table_size].size_in_bits = 8;
+    opcode_table[opcode_table_size].has_data_byte_1 = true;
+    opcode_table[opcode_table_size].data_bytes_are_jump_offsets = true;
+    opcode_table_size += 1;
+
+    /*
+    jump not less
+    jnl label2
+    */
+    strcpy(opcode_table[opcode_table_size].text, "JNL");
+    opcode_table[opcode_table_size].number = JNL;
+    opcode_table[opcode_table_size].size_in_bits = 8;
+    opcode_table[opcode_table_size].has_data_byte_1 = true;
+    opcode_table[opcode_table_size].data_bytes_are_jump_offsets = true;
+    opcode_table_size += 1;
+
+    /*
+    jump less or equal
+    jle label2
+    */
+    strcpy(opcode_table[opcode_table_size].text, "JLE");
+    opcode_table[opcode_table_size].number = JLE; // binary: 01111110
+    opcode_table[opcode_table_size].size_in_bits = 8;
+    opcode_table[opcode_table_size].has_data_byte_1 = true;
+    opcode_table[opcode_table_size].data_bytes_are_jump_offsets = true;
+    opcode_table_size += 1;
+
+    /*
+    jump greater
+    jg label2
+    */
+    strcpy(opcode_table[opcode_table_size].text, "JG");
+    opcode_table[opcode_table_size].number = JG; // binary: 01111111
+    opcode_table[opcode_table_size].size_in_bits = 8;
+    opcode_table[opcode_table_size].has_data_byte_1 = true;
+    opcode_table[opcode_table_size].data_bytes_are_jump_offsets = true;
+    opcode_table_size += 1;
+
+    /*
+    loop while 0 (aka equal)
+    */
+    strcpy(opcode_table[opcode_table_size].text, "LOOPZ");
+    opcode_table[opcode_table_size].number = LOOPZ_LOOPE; // binary: 11100001
+    opcode_table[opcode_table_size].size_in_bits = 8;
+    opcode_table[opcode_table_size].has_data_byte_1 = true;
+    opcode_table[opcode_table_size].data_bytes_are_jump_offsets = true;
+    opcode_table_size += 1;
+    
+    /*
+    loop while not 0 (aka not equal)
+    */
+    strcpy(opcode_table[opcode_table_size].text, "LOOPNZ");
+    opcode_table[opcode_table_size].number = LOOPNZ_LOOPNE; // binary: 11100000
+    opcode_table[opcode_table_size].size_in_bits = 8;
+    opcode_table[opcode_table_size].has_data_byte_1 = true;
+    opcode_table[opcode_table_size].data_bytes_are_jump_offsets = true;
+    opcode_table_size += 1;
+
+    /*
+    'loop cx times' - i think that means the value in the cx register is
+    implicitly used, we'll figure it out
+    loop label2
+    */
+    strcpy(opcode_table[opcode_table_size].text, "LOOP");
+    opcode_table[opcode_table_size].number = LOOP; // binary: 11100010
+    opcode_table[opcode_table_size].size_in_bits = 8;
+    opcode_table[opcode_table_size].has_data_byte_1 = true;
+    opcode_table[opcode_table_size].data_bytes_are_jump_offsets = true;
+    opcode_table_size += 1;
+
+    /*
+    JCXZ (jump when cx is 0)
+    */
+    strcpy(opcode_table[opcode_table_size].text, "JCXZ");
+    opcode_table[opcode_table_size].number = JCXZ; // binary: 11100011
+    opcode_table[opcode_table_size].size_in_bits = 8;
+    opcode_table[opcode_table_size].has_data_byte_1 = true;
+    opcode_table[opcode_table_size].data_bytes_are_jump_offsets = true;
     opcode_table_size += 1;
     
     // mod '11' or 3 with its own table
@@ -594,8 +880,15 @@ static void disassemble(
                 "failed to find opcode: %u - ",
                 try_opcode);
             print_binary(try_opcode);
-            printf("\n");
+            printf("\nAvailable opcodes were: ");
+            for (uint32_t i = 0; i < opcode_table_size; i++) {
+                if (opcode_table[i].text[0] == '\0') {
+                    printf("*");
+                }
+                printf("%u, ", opcode_table[i].number);
+            }
             *good = false;
+            assert(0);
             return;
         }
         
@@ -770,8 +1063,10 @@ static void disassemble(
         strcat(recipient, opcode->text);
         strcat(recipient, " ");
         
-        assert(reg <= UINT8_MAX); 
-        if (opcode->hardcoded_reg_w[0] != '\0') {
+        assert(reg <= UINT8_MAX);
+        if (opcode->data_bytes_are_jump_offsets) {
+        
+        } else if (opcode->hardcoded_reg_w[0] != '\0') {
             assert(opcode->hardcoded_reg_b[0] != '\0');
             if (w) {
                 strcat(first_part, opcode->hardcoded_reg_w);
@@ -791,7 +1086,7 @@ static void disassemble(
         } else {
             strcat(first_part, reg_table[w][reg]);
         }
-        assert(first_part[0] != '\0');
+        assert(opcode->data_bytes_are_jump_offsets || (first_part[0] != '\0'));
         
         if (secondary_reg[0] != '\0') {
             
@@ -829,16 +1124,21 @@ static void disassemble(
             return;
         }
         
-        assert(first_part[0] != '\0');
-        assert(second_part[0] != '\0');
-        if (d) {
-            strcat(recipient, first_part);
-            strcat(recipient, ", ");
-            strcat(recipient, second_part);
+        if (opcode->data_bytes_are_jump_offsets) {
+            strcat(recipient, " ; jump offset in bytes: ");
+            strcat_int(recipient, data_bytes_combined);
         } else {
-            strcat(recipient, second_part);
-            strcat(recipient, ", ");
-            strcat(recipient, first_part);
+            assert(first_part[0] != '\0');
+            assert(second_part[0] != '\0');
+            if (d) {
+                strcat(recipient, first_part);
+                strcat(recipient, ", ");
+                strcat(recipient, second_part);
+            } else {
+                strcat(recipient, second_part);
+                strcat(recipient, ", ");
+                strcat(recipient, first_part);
+            }
         }
         
         #if 0
@@ -847,6 +1147,10 @@ static void disassemble(
             recipient,
             opcode->number,
             opcode->size_in_bits);
+        if (opcode->has_secondary_3bit_opcode) {
+            strcat(recipient, ", opc_ext: ");
+            strcat_binary_uint(recipient, secondary_3bit_opcode, 3);
+        }
         if (opcode->has_s_field) {
             strcat(recipient, ", s: ");
             strcat_binary_uint(recipient, s, 1);
@@ -863,10 +1167,6 @@ static void disassemble(
             strcat(recipient, ", mod: ");
             strcat_binary_uint(recipient, mod, 2);
         }
-        if (opcode->has_secondary_3bit_opcode) {
-            strcat(recipient, ", 3bit_opcode_extension: ");
-            strcat_binary_uint(recipient, secondary_3bit_opcode, 3);
-        }
         if (opcode->has_reg) {
             strcat(recipient, ", reg: ");
             strcat_binary_uint(recipient, reg, 3);
@@ -876,17 +1176,16 @@ static void disassemble(
             strcat_binary_uint(recipient, r_m, 3);
         }
         if (num_displacement_bytes > 0) {
-            strcat(recipient, ", num_displacement_bytes: ");
-            strcat_int(recipient, num_displacement_bytes);
-            strcat(recipient, ", displacement_byte_1: ");
+            strcat(recipient, ", disp_1: ");
             strcat_binary_uint(recipient, displacement_byte_1, 8);
-            strcat(recipient, ", displacement_byte_2: ");
-            strcat_binary_uint(recipient, displacement_byte_2, 8);
-            strcat(recipient, ", displacement_bytes_combined: ");
+            if (num_displacement_bytes > 1) {
+                strcat(recipient, ", disp_2: ");
+                strcat_binary_uint(recipient, displacement_byte_2, 8);
+            }
+            strcat(recipient, ", combined: ");
             strcat_binary_uint(recipient, displacement_bytes_combined >> 8, 8);
             strcat(recipient, " ");
             strcat_binary_uint(recipient, displacement_bytes_combined & UINT8_MAX, 8);
-            strcat(recipient, ", data_bytes: ");
         }
         if (data_bytes > 0) {
             strcat(recipient, ", data_byte_1: ");
@@ -907,20 +1206,21 @@ static void disassemble(
 int main() {
     
     init_tables();
-    
-    uint8_t * machine_code = (uint8_t *)malloc(10000);
+   
+    #define MACHINE_CODE_CAP 10000 
+    uint8_t * machine_code = (uint8_t *)malloc(MACHINE_CODE_CAP);
     machine_code[0] = '\0';
     uint32_t machine_code_size = 0;
-    
+     
     read_file(
         /* char * filename: */
             "build/machinecode",
         /* uint8_t * recipient: */
-            &machine_code[0],
+            machine_code,
         /* uint32_t * recipient_size: */
             &machine_code_size,
         /* uint32_t recipient_cap: */
-            128);
+            MACHINE_CODE_CAP);
     
     if (machine_code_size == 0) {
         printf("failed to read input file\n");
@@ -930,7 +1230,7 @@ int main() {
     bytes_consumed = 0;
     bits_consumed = 0;
     
-    char * recipient = (char *)malloc(200000);
+    char * recipient = (char *)malloc(2000000);
     recipient[0] = '\0';
     input = machine_code;
     input_size = machine_code_size;

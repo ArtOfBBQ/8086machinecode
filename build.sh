@@ -18,7 +18,7 @@ fi
 ###################################################
 #### Step 2: Produce sample 8086 machine code  ####
 ###################################################
-if nasm src/samplemovs.asm -o build/machinecode; then
+if nasm -O0 src/samplemovs.asm -o build/machinecode; then
 echo "nasm success"
 else
 exit 0
