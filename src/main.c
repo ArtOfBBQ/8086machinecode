@@ -260,7 +260,7 @@ static void init_tables(void) {
         parsed_lines[i].parsed_text[0] = '\0';
         parsed_lines[i].label_id = -1;
         parsed_lines[i].machine_bytes = 0;
-        parsed_lines[i].append_jump_bytes = 0;
+        parsed_lines[i].append_jump_bytes = INT32_MIN;
         parsed_lines[i].jump_targets_label_id = -1;
     }
     
@@ -1298,7 +1298,7 @@ static void disassemble(
     the exact parsed line that they need to jump to
     */
     for (uint32_t i = 0; i < parsed_lines_size; i++) {
-        if (parsed_lines[i].append_jump_bytes != 0) {
+        if (parsed_lines[i].append_jump_bytes != INT32_MIN) {
             int32_t bytes_left = parsed_lines[i].append_jump_bytes;
             int32_t direction = 1;
             if (bytes_left < 0) {
@@ -1313,10 +1313,11 @@ static void disassemble(
                 target_line += direction;
             }
             target_line += 1;
-            
+                        
             if (parsed_lines[target_line].label_id < 0) {
                 parsed_lines[target_line].label_id = latest_label_id++;
             }
+            assert(parsed_lines[target_line].label_id >= 0);
             parsed_lines[i].jump_targets_label_id =
                 parsed_lines[target_line].label_id;
         }
@@ -1329,7 +1330,7 @@ static void disassemble(
             strcat(recipient, ":\n");
         }
         strcat(recipient, parsed_lines[i].parsed_text);
-        if (parsed_lines[i].jump_targets_label_id != -1) {
+        if (parsed_lines[i].jump_targets_label_id >= 0) {
             strcat(recipient, "label_");
             strcat_int(recipient, parsed_lines[i].jump_targets_label_id);
         }

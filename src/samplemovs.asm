@@ -119,7 +119,7 @@ cmp al, -30
 cmp al, 9
 test_label1:
 jnz test_label1
-; jnz test_label0 ; can't jump ahead 1 instruction although tbf why would we 
+jnz test_label0 ; can't jump ahead 1 instruction although tbf why would we 
 test_label0:
 jnz test_label0
 jnz test_label1
