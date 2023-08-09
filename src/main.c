@@ -10,6 +10,19 @@
 #define false 0
 #endif
 
+typedef struct ParsedLines {
+    uint32_t machine_bytes;
+    char parsed_text[800];
+    int32_t label_id;
+    int32_t append_jump_bytes;
+    int32_t jump_targets_label_id;
+} ParsedLines;
+
+#define PARSED_LINES_MAX 10000
+static ParsedLines * parsed_lines = NULL;
+static uint32_t parsed_lines_size = 0;
+static uint32_t latest_label_id = 0;
+
 static void print_binary(
     const uint8_t input)
 {
@@ -86,7 +99,7 @@ static void strcat_uint(
         }
         mod /= 10;
     }
-
+    
     if (!found_leader) {
         recipient[i++] = '0';
     }
@@ -239,8 +252,19 @@ static char modsub3_rm_table[3][8][15];
 
 static void init_tables(void) {
     
+    parsed_lines =
+        (ParsedLines *)malloc(sizeof(ParsedLines) * PARSED_LINES_MAX);
+    parsed_lines_size = 0;
+    
+    for (uint32_t i = 0; i < PARSED_LINES_MAX; i++) {
+        parsed_lines[i].parsed_text[0] = '\0';
+        parsed_lines[i].label_id = -1;
+        parsed_lines[i].machine_bytes = 0;
+        parsed_lines[i].append_jump_bytes = 0;
+        parsed_lines[i].jump_targets_label_id = -1;
+    }
+    
     opcode_table = (OpCode *)malloc(OPCODE_TABLE_SIZE * sizeof(OpCode));
-    opcode_table_size = 0;
     
     assert(OPCODE_TABLE_SIZE > 100);
     for (uint32_t i = 0; i < OPCODE_TABLE_SIZE; i++) {
@@ -278,7 +302,7 @@ static void init_tables(void) {
     opcode_table[opcode_table_size].has_data_byte_1 = true;
     opcode_table[opcode_table_size].has_data_byte_2_if_w = true;
     opcode_table_size += 1;
-
+    
     strcpy(opcode_table[opcode_table_size].text, "MOV");
     opcode_table[opcode_table_size].number = MOV_REGMEMTOREG; // 100010
     opcode_table[opcode_table_size].size_in_bits = 6;
@@ -288,7 +312,7 @@ static void init_tables(void) {
     opcode_table[opcode_table_size].has_reg = true;
     opcode_table[opcode_table_size].has_rm = true;
     opcode_table_size += 1;
-   
+    
     /* 
     note: these names are from the intel manual, actually I would reverse them
     ('memory to accumulator' moves what's in the accumulator to memory)
@@ -365,7 +389,7 @@ static void init_tables(void) {
     opcode_table[opcode_table_size].has_data_byte_2_if_w = true;
     opcode_table[opcode_table_size].data_bytes_are_immediates = true;
     opcode_table_size += 1;
-
+    
     strcpy(opcode_table[opcode_table_size].text, "SUB");
     opcode_table[opcode_table_size].number = SUB_REGMEMTOREG; // 001010
     opcode_table[opcode_table_size].size_in_bits = 6;
@@ -392,7 +416,7 @@ static void init_tables(void) {
     opcode_table[opcode_table_size].has_data_byte_2_if_w = true;
     opcode_table[opcode_table_size].data_bytes_are_immediates = true;
     opcode_table_size += 1;
-
+    
     strcpy(opcode_table[opcode_table_size].text, "CMP");
     opcode_table[opcode_table_size].number = CMP_REGMEMTOREG; // 001110
     opcode_table[opcode_table_size].size_in_bits = 6;
@@ -467,7 +491,7 @@ static void init_tables(void) {
     opcode_table[opcode_table_size].has_data_byte_2_if_w = true;
     opcode_table[opcode_table_size].data_bytes_are_immediates = true;
     opcode_table_size += 1;
-
+    
     /*
     jump not zero
     jnz test_label1
@@ -489,7 +513,7 @@ static void init_tables(void) {
     opcode_table[opcode_table_size].has_data_byte_1 = true;
     opcode_table[opcode_table_size].data_bytes_are_jump_offsets = true;
     opcode_table_size += 1;
-
+    
     /*
     jump on overflow
     jo label2
@@ -500,7 +524,7 @@ static void init_tables(void) {
     opcode_table[opcode_table_size].has_data_byte_1 = true;
     opcode_table[opcode_table_size].data_bytes_are_jump_offsets = true;
     opcode_table_size += 1;
-
+    
     /*
     jump on overflow
     jno label2
@@ -522,7 +546,7 @@ static void init_tables(void) {
     opcode_table[opcode_table_size].has_data_byte_1 = true;
     opcode_table[opcode_table_size].data_bytes_are_jump_offsets = true;
     opcode_table_size += 1;
-
+    
     /*
     jump not below
     jnb label2
@@ -544,7 +568,7 @@ static void init_tables(void) {
     opcode_table[opcode_table_size].has_data_byte_1 = true;
     opcode_table[opcode_table_size].data_bytes_are_jump_offsets = true;
     opcode_table_size += 1;
-
+    
     /*
     jump abovej
     ja label2
@@ -555,7 +579,7 @@ static void init_tables(void) {
     opcode_table[opcode_table_size].has_data_byte_1 = true;
     opcode_table[opcode_table_size].data_bytes_are_jump_offsets = true;
     opcode_table_size += 1;
-
+    
     /*
     jump on sign
     js label2
@@ -589,7 +613,7 @@ static void init_tables(void) {
     opcode_table[opcode_table_size].has_data_byte_1 = true;
     opcode_table[opcode_table_size].data_bytes_are_jump_offsets = true;
     opcode_table_size += 1;
-
+    
     /*
     jump not parity
     jnp label2
@@ -611,7 +635,7 @@ static void init_tables(void) {
     opcode_table[opcode_table_size].has_data_byte_1 = true;
     opcode_table[opcode_table_size].data_bytes_are_jump_offsets = true;
     opcode_table_size += 1;
-
+    
     /*
     jump not less
     jnl label2
@@ -811,20 +835,19 @@ static void disassemble(
     char * recipient,
     uint32_t * good)
 {
-    strcat(recipient, "bits 16\n");
-    
     bytes_consumed = 0;
     bits_consumed = 0;
+    parsed_lines_size = 0;
     
     while (bytes_consumed < input_size) {
         if (bits_consumed != 0) {
-            printf("%s\n", recipient);
             printf(
                 "Error - bits consumed %u (not 0) at new line\n",
                 bits_consumed);
             *good = false;
             return;
         }
+        uint32_t bytes_consumed_at_sol = bytes_consumed;
         
         OpCode * opcode = NULL;
         uint8_t bits_to_try = 1;
@@ -874,7 +897,6 @@ static void disassemble(
         }
         
         if (opcode == NULL) {
-            printf("%s\n", recipient);
             uint32_t try_opcode = try_bits(bits_to_try);
             printf(
                 "failed to find opcode: %u - ",
@@ -1060,8 +1082,8 @@ static void disassemble(
         char second_part[20];
         second_part[0] = '\0';
         
-        strcat(recipient, opcode->text);
-        strcat(recipient, " ");
+        strcat(parsed_lines[parsed_lines_size].parsed_text, opcode->text);
+        strcat(parsed_lines[parsed_lines_size].parsed_text, " ");
         
         assert(reg <= UINT8_MAX);
         if (opcode->data_bytes_are_jump_offsets) {
@@ -1086,7 +1108,9 @@ static void disassemble(
         } else {
             strcat(first_part, reg_table[w][reg]);
         }
-        assert(opcode->data_bytes_are_jump_offsets || (first_part[0] != '\0'));
+        assert(
+            opcode->data_bytes_are_jump_offsets ||
+            (first_part[0] != '\0'));
         
         if (secondary_reg[0] != '\0') {
             
@@ -1125,93 +1149,203 @@ static void disassemble(
         }
         
         if (opcode->data_bytes_are_jump_offsets) {
-            strcat(recipient, " ; jump offset in bytes: ");
-            strcat_int(recipient, data_bytes_combined);
+            parsed_lines[parsed_lines_size].append_jump_bytes =
+                (int32_t)data_bytes_combined;
         } else {
             assert(first_part[0] != '\0');
             assert(second_part[0] != '\0');
             if (d) {
-                strcat(recipient, first_part);
-                strcat(recipient, ", ");
-                strcat(recipient, second_part);
+                strcat(
+                    parsed_lines[parsed_lines_size].parsed_text,
+                    first_part);
+                strcat(parsed_lines[parsed_lines_size].parsed_text, ", ");
+                strcat(
+                    parsed_lines[parsed_lines_size].parsed_text,
+                    second_part);
             } else {
-                strcat(recipient, second_part);
-                strcat(recipient, ", ");
-                strcat(recipient, first_part);
+                strcat(
+                    parsed_lines[parsed_lines_size].parsed_text,
+                    second_part);
+                strcat(
+                    parsed_lines[parsed_lines_size].parsed_text,
+                    ",");
+                strcat(
+                    parsed_lines[parsed_lines_size].parsed_text,
+                    first_part);
             }
         }
         
         #if 0
-        strcat(recipient, " ; opcode: ");
+        strcat(parsed_lines[parsed_lines_size].parsed_text, " ; opcode: ");
         strcat_binary_uint(
-            recipient,
+            parsed_lines[parsed_lines_size].parsed_text,
             opcode->number,
             opcode->size_in_bits);
         if (opcode->has_secondary_3bit_opcode) {
-            strcat(recipient, ", opc_ext: ");
-            strcat_binary_uint(recipient, secondary_3bit_opcode, 3);
+            strcat(parsed_lines[parsed_lines_size].parsed_text, ", opc_ext: ");
+            strcat_binary_uint(
+                parsed_lines[parsed_lines_size].parsed_text,
+                secondary_3bit_opcode, 3);
         }
         if (opcode->has_s_field) {
-            strcat(recipient, ", s: ");
-            strcat_binary_uint(recipient, s, 1);
+            strcat(parsed_lines[parsed_lines_size].parsed_text, ", s: ");
+            strcat_binary_uint(
+                parsed_lines[parsed_lines_size].parsed_text,
+                s,
+                1);
         }
         if (opcode->has_w_field) {
-            strcat(recipient, ", w: ");
-            strcat_binary_uint(recipient, w, 1);
+            strcat(parsed_lines[parsed_lines_size].parsed_text, ", w: ");
+            strcat_binary_uint(
+                parsed_lines[parsed_lines_size].parsed_text,
+                w,
+                1);
         }
         if (opcode->has_d_field) {
-            strcat(recipient, ", d: ");
-            strcat_binary_uint(recipient, d, 1);
+            strcat(parsed_lines[parsed_lines_size].parsed_text, ", d: ");
+            strcat_binary_uint(
+                parsed_lines[parsed_lines_size].parsed_text,
+                d,
+                1);
         }
         if (opcode->has_mod) {
-            strcat(recipient, ", mod: ");
-            strcat_binary_uint(recipient, mod, 2);
+            strcat(parsed_lines[parsed_lines_size].parsed_text, ", mod: ");
+            strcat_binary_uint(
+                parsed_lines[parsed_lines_size].parsed_text,
+                mod,
+                2);
         }
         if (opcode->has_reg) {
-            strcat(recipient, ", reg: ");
-            strcat_binary_uint(recipient, reg, 3);
+            strcat(parsed_lines[parsed_lines_size].parsed_text, ", reg: ");
+            strcat_binary_uint(
+                parsed_lines[parsed_lines_size].parsed_text,
+                reg,
+                3);
         }
         if (opcode->has_rm) {
-            strcat(recipient, ", rm: ");
-            strcat_binary_uint(recipient, r_m, 3);
+            strcat(parsed_lines[parsed_lines_size].parsed_text, ", rm: ");
+            strcat_binary_uint(
+                parsed_lines[parsed_lines_size].parsed_text,
+                r_m,
+                3);
         }
         if (num_displacement_bytes > 0) {
-            strcat(recipient, ", disp_1: ");
-            strcat_binary_uint(recipient, displacement_byte_1, 8);
+            strcat(parsed_lines[parsed_lines_size].parsed_text, ", disp_1: ");
+            strcat_binary_uint(
+                parsed_lines[parsed_lines_size].parsed_text,
+                displacement_byte_1,
+                8);
             if (num_displacement_bytes > 1) {
-                strcat(recipient, ", disp_2: ");
-                strcat_binary_uint(recipient, displacement_byte_2, 8);
+                strcat(
+                    parsed_lines[parsed_lines_size].parsed_text,
+                    ",
+                    disp_2: ");
+                strcat_binary_uint(
+                    parsed_lines[parsed_lines_size].parsed_text,
+                    displacement_byte_2,
+                    8);
             }
-            strcat(recipient, ", combined: ");
-            strcat_binary_uint(recipient, displacement_bytes_combined >> 8, 8);
-            strcat(recipient, " ");
-            strcat_binary_uint(recipient, displacement_bytes_combined & UINT8_MAX, 8);
+            strcat(
+                parsed_lines[parsed_lines_size].parsed_text,
+                ",
+                combined: ");
+            strcat_binary_uint(
+                parsed_lines[parsed_lines_size].parsed_text,
+                displacement_bytes_combined >> 8,
+                8);
+            strcat(
+                parsed_lines[parsed_lines_size].parsed_text,
+                " ");
+            strcat_binary_uint(
+                parsed_lines[parsed_lines_size].parsed_text,
+                displacement_bytes_combined & UINT8_MAX,
+                8);
         }
         if (data_bytes > 0) {
-            strcat(recipient, ", data_byte_1: ");
-            strcat_int(recipient, data_byte_1);
+            strcat(
+                parsed_lines[parsed_lines_size].parsed_text,
+                ",
+                data_byte_1: ");
+            strcat_int(
+                parsed_lines[parsed_lines_size].parsed_text,
+                data_byte_1);
             if (data_bytes > 1) {
-                strcat(recipient, ", data_byte_2: ");
-                strcat_int(recipient, data_byte_2);
+                strcat(
+                    parsed_lines[parsed_lines_size].parsed_text,
+                    ",
+                    data_byte_2: ");
+                strcat_int(
+                    parsed_lines[parsed_lines_size].parsed_text,
+                    data_byte_2);
             }
         }
         #endif
         
+        parsed_lines[parsed_lines_size].machine_bytes =
+            bytes_consumed - bytes_consumed_at_sol;
+        parsed_lines_size += 1;
+    }
+    
+    *good = true;
+    
+    // copy our parsed output to 'recipient'
+    // in this step we have to do some extra work to add labels
+    recipient[0] = '\0';
+    strcpy(recipient, "bits 16\n");
+    
+    /*
+    We want to iterate through the parsed lines looking for jumps, and cache
+    the exact parsed line that they need to jump to
+    */
+    for (uint32_t i = 0; i < parsed_lines_size; i++) {
+        if (parsed_lines[i].append_jump_bytes != 0) {
+            int32_t bytes_left = parsed_lines[i].append_jump_bytes;
+            int32_t direction = 1;
+            if (bytes_left < 0) {
+                direction = -1;
+                bytes_left *= -1;
+            }
+            
+            uint32_t target_line = i;
+            while (bytes_left > 0) {
+                assert(parsed_lines[target_line].machine_bytes <= bytes_left);
+                bytes_left -= parsed_lines[target_line].machine_bytes;
+                target_line += direction;
+            }
+            target_line += 1;
+            
+            if (parsed_lines[target_line].label_id < 0) {
+                parsed_lines[target_line].label_id = latest_label_id++;
+            }
+            parsed_lines[i].jump_targets_label_id =
+                parsed_lines[target_line].label_id;
+        }
+    }
+    
+    for (uint32_t i = 0; i < parsed_lines_size; i++) {
+        if (parsed_lines[i].label_id >= 0) {
+            strcat(recipient, "label_");
+            strcat_int(recipient, parsed_lines[i].label_id);
+            strcat(recipient, ":\n");
+        }
+        strcat(recipient, parsed_lines[i].parsed_text);
+        if (parsed_lines[i].jump_targets_label_id != -1) {
+            strcat(recipient, "label_");
+            strcat_int(recipient, parsed_lines[i].jump_targets_label_id);
+        }
         strcat(recipient, "\n");
     }
-
-    *good = true;
 }
 
 int main() {
     
     init_tables();
-   
+    
     #define MACHINE_CODE_CAP 10000 
     uint8_t * machine_code = (uint8_t *)malloc(MACHINE_CODE_CAP);
     machine_code[0] = '\0';
     uint32_t machine_code_size = 0;
-     
+    
     read_file(
         /* char * filename: */
             "build/machinecode",
@@ -1246,6 +1380,7 @@ int main() {
         printf("unknown error\n");
         return 1;
     }
+    
     strcat(recipient, "\n");
     printf("%s", recipient);
     return 0;
